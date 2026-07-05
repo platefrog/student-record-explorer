@@ -12,9 +12,20 @@ datas = [
 hiddenimports = []
 binaries = []
 
+
+def runtime_submodule(name):
+    """Exclude package-internal test suites from the end-user bundle."""
+    parts = {part.lower() for part in name.split('.')}
+    return not parts.intersection({'test', 'tests', 'testing', 'conftest'})
+
+
 for pkg in ['streamlit', 'pandas', 'sklearn', 'wordcloud', 'matplotlib', 'kiwipiepy', 'requests', 'openpyxl']:
     try:
-        d, b, h = collect_all(pkg)
+        d, b, h = collect_all(
+            pkg,
+            filter_submodules=runtime_submodule,
+            exclude_datas=['**/test/**', '**/tests/**', '**/testing/**', '**/__pycache__/**'],
+        )
         datas += d
         binaries += b
         hiddenimports += h
@@ -36,7 +47,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['pytest', 'unittest', 'doctest'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
