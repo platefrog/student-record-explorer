@@ -44,9 +44,9 @@ except Exception:
 
 APP_DIR = Path(__file__).resolve().parent
 try:
-    APP_VERSION = (APP_DIR / 'VERSION').read_text(encoding='utf-8').strip() or '1.0.1'
+    APP_VERSION = (APP_DIR / 'VERSION').read_text(encoding='utf-8').strip() or 'development'
 except Exception:
-    APP_VERSION = '1.0.2'
+    APP_VERSION = 'development'
 BUNDLED_DATA_DIR = APP_DIR / 'data'
 DATA_DIR = Path(os.environ.get('SRE_DATA_DIR', str(BUNDLED_DATA_DIR))).expanduser()
 DB_PATH = DATA_DIR / 'major_corpus.db'
@@ -515,33 +515,6 @@ def apply_ui_style():
             font-size: .92rem;
             margin-bottom: .75rem;
         }
-        .sre-footer {
-            border: 1px solid rgba(148,163,184,.18);
-            border-radius: 22px;
-            padding: 1.55rem 1.7rem 1.25rem;
-            margin: 2.2rem 0 1.5rem 0;
-            background:
-                radial-gradient(circle at 92% 8%, rgba(59,130,246,.14), transparent 32%),
-                linear-gradient(135deg, rgba(15,23,42,.82), rgba(17,24,39,.38));
-            box-shadow: 0 18px 50px rgba(0,0,0,.16);
-            color: #CBD5E1;
-            line-height: 1.65;
-        }
-        .sre-footer-grid {display:grid; grid-template-columns:minmax(220px,.8fr) minmax(320px,1.2fr); gap:2rem; align-items:start;}
-        .sre-footer-kicker {font-size:.7rem; font-weight:800; letter-spacing:.14em; color:#60A5FA; text-transform:uppercase;}
-        .sre-footer-title {font-size:1.28rem; font-weight:900; color:#F8FAFC; margin-top:.18rem; letter-spacing:-.03em;}
-        .sre-footer-sub {font-size:.82rem; color:#93C5FD; margin-top:.2rem;}
-        .sre-footer-person {font-size:1.02rem; font-weight:850; color:#F8FAFC; margin-bottom:.5rem;}
-        .sre-footer-role {color:#94A3B8; font-size:.72rem; font-weight:800; letter-spacing:.08em; margin-left:.35rem;}
-        .sre-footer-meta {display:grid; grid-template-columns:1fr; gap:.3rem; font-size:.82rem;}
-        .sre-footer-meta-value {color:#CBD5E1;}
-        .sre-footer-mail {color:#93C5FD !important; text-decoration:none; border-bottom:1px solid rgba(147,197,253,.35);}
-        .sre-footer-note {font-size:.76rem; color:#94A3B8; margin-top:1.2rem; padding-top:1rem; border-top:1px solid rgba(148,163,184,.14);}
-        .sre-footer-bottom {display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap; color:#64748B; font-size:.69rem; margin-top:.85rem;}
-        @media (max-width: 760px) {
-            .sre-footer-grid {grid-template-columns:1fr; gap:1.25rem;}
-            .sre-footer {padding:1.3rem;}
-        }
         .sre-gauge-wrap {border:1px solid rgba(148,163,184,.22); border-radius:14px; padding:1rem; margin-bottom:.8rem; background:rgba(2,6,23,.2);}
         .sre-gauge-label {font-size:.88rem; color:#9CA3AF; margin-bottom:.35rem;}
         .sre-gauge-value {font-size:2.2rem; font-weight:900; color:#E5E7EB; letter-spacing:-.04em;}
@@ -850,37 +823,28 @@ def render_full_user_guide():
     render_analysis_terms_help()
 
 def render_footer():
-    st.markdown(
-        f"""
-        <div class="sre-footer">
-          <div class="sre-footer-grid">
-            <div>
-              <div class="sre-footer-kicker">Student Record Explorer</div>
-              <div class="sre-footer-title">학생부 탐색기</div>
-              <div class="sre-footer-sub">교육 현장을 위한 학생부 텍스트 분석 도구</div>
-            </div>
-            <div>
-              <div class="sre-footer-person">박효진 <span class="sre-footer-role">개발 · 연구</span></div>
-              <div class="sre-footer-meta">
-                <div class="sre-footer-meta-value">경남대학교 국어교육과 박사과정</div>
-                <div class="sre-footer-meta-value">거제상문고등학교 교사</div>
-                <div class="sre-footer-meta-value"><a class="sre-footer-mail" href="mailto:losaci@naver.com">losaci@naver.com</a></div>
-              </div>
-            </div>
-          </div>
-          <div class="sre-footer-note">
-            본 프로그램은 학교생활기록부 서술형 기록의 교육적 탐색을 지원하기 위한 연구·교육용 도구입니다.
-            실제 학생 자료를 사용할 때에는 개인정보 보호, 비식별화, 기관 지침 및 연구윤리 절차를 준수해야 합니다.
-            분석 결과는 진로 결정이나 평가의 최종 판단이 아니라 교사의 기록 탐색과 상담을 돕는 참고자료입니다.
-          </div>
-          <div class="sre-footer-bottom">
-            <span>Student Record Explorer v{APP_VERSION} · For educational &amp; research use</span>
-            <span>Copyright © Park Hyojin. All rights reserved.</span>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.divider()
+    with st.container(border=True):
+        product, author = st.columns([0.8, 1.2])
+        with product:
+            st.caption('STUDENT RECORD EXPLORER')
+            st.markdown('#### 학생부 탐색기')
+            st.caption('교육 현장을 위한 학생부 텍스트 분석 도구')
+        with author:
+            st.markdown('**박효진** · 개발 · 연구')
+            st.caption('경남대학교 국어교육과 박사과정')
+            st.caption('거제상문고등학교 교사')
+            st.caption('losaci@naver.com')
+
+        st.caption(
+            '본 프로그램은 학교생활기록부 서술형 기록의 교육적 탐색을 지원하기 위한 연구·교육용 도구입니다. '
+            '실제 학생 자료를 사용할 때에는 개인정보 보호, 비식별화, 기관 지침 및 연구윤리 절차를 준수해야 합니다. '
+            '분석 결과는 진로 결정이나 평가의 최종 판단이 아니라 교사의 기록 탐색과 상담을 돕는 참고자료입니다.'
+        )
+        st.caption(
+            f'Student Record Explorer v{APP_VERSION} · For educational & research use · '
+            'Copyright © Park Hyojin. All rights reserved.'
+        )
 
 def is_student_row(vals):
     return len(vals)>=2 and NO_RE.match(clean(vals[0]) or '') and NAME_RE.match(clean(vals[1]) or '')

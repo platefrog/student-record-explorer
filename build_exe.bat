@@ -3,7 +3,7 @@ chcp 65001 > nul
 cd /d "%~dp0"
 set PYTHONUTF8=1
 set "PYTHON=.venv\Scripts\python.exe"
-set "APP_VERSION=1.0.2"
+set /p APP_VERSION=<VERSION
 set "DIST_NAME=StudentRecordExplorer-%APP_VERSION%"
 
 if not exist "%PYTHON%" (
@@ -12,30 +12,38 @@ if not exist "%PYTHON%" (
     if errorlevel 1 goto ERROR
 )
 
-echo [1/4] Installing build requirements...
+echo [1/5] Installing build requirements...
 "%PYTHON%" -m pip install -r requirements.txt
 if errorlevel 1 goto ERROR
 
-echo [2/4] Building StudentRecordExplorer.exe...
+echo [2/5] Verifying source and cleaning old build artifacts...
+"%PYTHON%" scripts\release_verify.py --check
+if errorlevel 1 goto ERROR
+"%PYTHON%" scripts\release_verify.py --clean
+if errorlevel 1 goto ERROR
+
+echo [3/5] Building StudentRecordExplorer.exe...
 "%PYTHON%" -m PyInstaller StudentRecordExplorer.spec --clean --noconfirm
 if errorlevel 1 goto ERROR
 
-echo [3/4] Creating portable ZIP...
-if not exist release mkdir release
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path 'dist\%DIST_NAME%' -DestinationPath 'release\StudentRecordExplorer-Portable-%APP_VERSION%.zip' -CompressionLevel Optimal -Force"
+echo [4/5] Creating portable ZIP...
+"%PYTHON%" scripts\release_verify.py --archive
 if errorlevel 1 goto ERROR
 
-echo [4/4] Looking for Inno Setup...
+echo [5/5] Creating installer and verifying artifacts...
 set "ISCC="
 if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
 if defined ISCC (
-    "%ISCC%" installer.iss
+    "%ISCC%" "/DMyAppVersion=%APP_VERSION%" installer.iss
     if errorlevel 1 goto ERROR
 ) else (
     echo Inno Setup is not installed. The portable ZIP was created; installer compilation was skipped.
 )
+
+"%PYTHON%" scripts\release_verify.py --finalize
+if errorlevel 1 goto ERROR
 
 echo.
 echo Build complete.

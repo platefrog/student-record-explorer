@@ -1,6 +1,8 @@
 #define MyAppName "학생부 탐색기"
 #define MyAppEnglishName "StudentRecord Explorer"
-#define MyAppVersion "1.0.2"
+#ifndef MyAppVersion
+  #error MyAppVersion must be supplied by build_exe.bat
+#endif
 #define MyAppPublisher "Park Hyojin"
 #define MyAppExeName "StudentRecordExplorer.exe"
 

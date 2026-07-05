@@ -1,13 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all, collect_data_files
+from pathlib import Path
 
 block_cipher = None
+app_version = (Path(SPECPATH) / 'VERSION').read_text(encoding='utf-8').strip()
 
 datas = [
     ('app.py', '.'),
     ('careernet_corpus.py', '.'),
     ('VERSION', '.'),
-    ('data', 'data'),
+    ('data/stopwords.txt', 'data'),
+    ('data/synonyms.txt', 'data'),
 ]
 hiddenimports = []
 binaries = []
@@ -80,5 +83,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='StudentRecordExplorer-1.0.2',
+    name=f'StudentRecordExplorer-{app_version}',
 )
