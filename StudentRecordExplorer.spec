@@ -47,7 +47,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['pytest', 'unittest', 'doctest'],
+    excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -80,5 +80,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='StudentRecordExplorer-1.0.0',
+    name='StudentRecordExplorer-1.0.1',
 )

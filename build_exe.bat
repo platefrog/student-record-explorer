@@ -3,7 +3,7 @@ chcp 65001 > nul
 cd /d "%~dp0"
 set PYTHONUTF8=1
 set "PYTHON=.venv\Scripts\python.exe"
-set "APP_VERSION=1.0.0"
+set "APP_VERSION=1.0.1"
 set "DIST_NAME=StudentRecordExplorer-%APP_VERSION%"
 
 if not exist "%PYTHON%" (

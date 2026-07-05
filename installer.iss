@@ -1,6 +1,6 @@
 #define MyAppName "학생부 탐색기"
 #define MyAppEnglishName "StudentRecord Explorer"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Park Hyojin"
 #define MyAppExeName "StudentRecordExplorer.exe"
 

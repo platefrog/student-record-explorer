@@ -44,9 +44,9 @@ except Exception:
 
 APP_DIR = Path(__file__).resolve().parent
 try:
-    APP_VERSION = (APP_DIR / 'VERSION').read_text(encoding='utf-8').strip() or '1.0.0'
+    APP_VERSION = (APP_DIR / 'VERSION').read_text(encoding='utf-8').strip() or '1.0.1'
 except Exception:
-    APP_VERSION = '1.0.0'
+    APP_VERSION = '1.0.1'
 BUNDLED_DATA_DIR = APP_DIR / 'data'
 DATA_DIR = Path(os.environ.get('SRE_DATA_DIR', str(BUNDLED_DATA_DIR))).expanduser()
 DB_PATH = DATA_DIR / 'major_corpus.db'
