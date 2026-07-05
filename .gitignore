@@ -1,0 +1,22 @@
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+
+# Build and release artifacts
+build/
+dist/
+release/
+
+# Local runtime files
+.streamlit-*.log
+run_dev.stdout.log
+run_dev.stderr.log
+data/_tmp_corpus.db
+data/_download.db
+data/_uploaded_student_cache.db
+data/_student_cache_download.db
+
+# Local secrets
+.env
+.streamlit/secrets.toml
