@@ -80,5 +80,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='StudentRecordExplorer-1.0.1',
+    name='StudentRecordExplorer-1.0.2',
 )
