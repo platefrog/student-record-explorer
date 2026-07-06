@@ -509,25 +509,26 @@ def apply_ui_style():
         .sre-card {
             border: 1px solid rgba(148,163,184,.22);
             border-radius: 16px;
-            background: rgba(15,23,42,.38);
+            background: rgba(148,163,184,.10);
             padding: 1.1rem 1.15rem;
             margin: .55rem 0 1rem 0;
-            box-shadow: 0 8px 28px rgba(0,0,0,.16);
+            box-shadow: 0 8px 28px rgba(0,0,0,.10);
         }
         .sre-status-item {
             border: 1px solid rgba(148,163,184,.18);
             border-radius: 14px;
-            background: rgba(2,6,23,.22);
+            background: rgba(148,163,184,.10);
             padding: .85rem .95rem;
         }
         .sre-status-label {
-            color: #9CA3AF;
+            color: inherit;
+            opacity: .78;
             font-size: .84rem;
             font-weight: 700;
             margin-bottom: .25rem;
         }
         .sre-status-value {
-            color: #F8FAFC;
+            color: inherit;
             font-size: 1.52rem;
             font-weight: 900;
             letter-spacing: -0.04em;
@@ -539,30 +540,31 @@ def apply_ui_style():
             letter-spacing: -0.03em;
         }
         .sre-section-caption {
-            color: #9CA3AF;
+            color: inherit;
+            opacity: .78;
             font-size: .92rem;
             margin-bottom: .75rem;
         }
-        .sre-gauge-wrap {border:1px solid rgba(148,163,184,.22); border-radius:14px; padding:1rem; margin-bottom:.8rem; background:rgba(2,6,23,.2);}
-        .sre-gauge-label {font-size:.88rem; color:#9CA3AF; margin-bottom:.35rem;}
-        .sre-gauge-value {font-size:2.2rem; font-weight:900; color:#E5E7EB; letter-spacing:-.04em;}
+        .sre-gauge-wrap {border:1px solid rgba(148,163,184,.22); border-radius:14px; padding:1rem; margin-bottom:.8rem; background:rgba(148,163,184,.10);}
+        .sre-gauge-label {font-size:.88rem; color:inherit; opacity:.78; margin-bottom:.35rem;}
+        .sre-gauge-value {font-size:2.2rem; font-weight:900; color:inherit; letter-spacing:-.04em;}
         .sre-bar-bg {height: 13px; background:rgba(148,163,184,.22); border-radius:999px; overflow:hidden; margin:.65rem 0 .35rem;}
         .sre-bar-fill {height:13px; border-radius:999px; background:linear-gradient(90deg,#60A5FA,#34D399);}
-        .sre-small {font-size:.82rem; color:#9CA3AF;}
-        .sre-pill {display:inline-block; padding:.22rem .55rem; border-radius:999px; background:rgba(59,130,246,.13); border:1px solid rgba(59,130,246,.25); color:#BFDBFE; font-size:.78rem; margin:.12rem;}
+        .sre-small {font-size:.82rem; color:inherit; opacity:.78;}
+        .sre-pill {display:inline-block; padding:.22rem .55rem; border-radius:999px; background:rgba(59,130,246,.13); border:1px solid rgba(59,130,246,.25); color:inherit; font-size:.78rem; margin:.12rem;}
         .sre-evidence-scroll {
             max-height: 540px; overflow-y: auto; padding: .25rem .65rem .25rem .15rem;
             border-left: 1px solid rgba(148,163,184,.22);
         }
         .sre-evidence-card {
             border-left: 3px solid #60A5FA;
-            background: rgba(15,23,42,.26);
+            background: rgba(148,163,184,.10);
             border-radius: 10px;
             padding: .8rem .9rem;
             margin-bottom: .8rem;
         }
-        .sre-evidence-meta {font-weight:800; color:#E5E7EB; margin-bottom:.35rem;}
-        .sre-evidence-text {color:#CBD5E1; line-height:1.75; font-size:.95rem;}
+        .sre-evidence-meta {font-weight:800; color:inherit; margin-bottom:.35rem;}
+        .sre-evidence-text {color:inherit; line-height:1.75; font-size:.95rem; opacity:.92;}
         .sre-keyword-highlight {
             background: linear-gradient(120deg, #FDE68A, #FBBF24);
             color: #422006;
@@ -578,7 +580,7 @@ def apply_ui_style():
             border-radius: 999px;
             background: rgba(251,191,36,.14);
             border: 1px solid rgba(251,191,36,.35);
-            color: #FDE68A;
+            color: inherit;
             font-size: .82rem;
             font-weight: 800;
         }
@@ -1760,23 +1762,23 @@ def main():
                 key='preprocess_analyzer',
                 help='전처리 결과에 기록되며, 이후 학생 분석에서도 같은 방식을 사용합니다.',
             )
-            with st.expander('Analyzer setup help', expanded=False):
+            with st.expander('형태소 분석기 설치 안내', expanded=False):
                 st.markdown(
-                    '- Included in release: `Kiwi` + `kiwipiepy_model` (recommended)\n'
-                    '- Included in release: `Rule-based tokenizer` (no extra install)\n'
-                    '- Not bundled by default: `MeCab` (optional)\n'
+                    '- 릴리즈 기본 포함: `Kiwi` + `kiwipiepy_model` (권장)\n'
+                    '- 릴리즈 기본 포함: `간이 토큰화` (추가 설치 없음)\n'
+                    '- 기본 미포함(선택): `MeCab`\n'
                     '\n'
-                    'To use MeCab:\n'
-                    '1. Install a Python wrapper (`mecab_ko` or `mecab`).\n'
-                    '2. Install the MeCab engine and dictionary on Windows.\n'
-                    '3. Restart this app and choose `MeCab` in the analyzer list.\n'
+                    'MeCab을 사용하려면:\n'
+                    '1. Python 래퍼(`mecab_ko` 또는 `mecab`)를 설치하세요.\n'
+                    '2. Windows용 MeCab 엔진/사전을 설치하세요.\n'
+                    '3. 앱을 재시작한 뒤 분석기 목록에서 `MeCab`을 선택하세요.\n'
                     '\n'
-                    'If MeCab is unavailable, use `Kiwi` for the default stable path.'
+                    '설치가 어렵거나 환경 제약이 있으면 기본 경로인 `Kiwi`를 사용하세요.'
                 )
             selected_analyzer_available = analyzer_available(selected_analyzer)
             unavailable_reason = analyzer_unavailable_reason(selected_analyzer)
             if selected_analyzer == 'Kiwi' and not selected_analyzer_available:
-                st.warning(f'Kiwi 분석기를 사용할 수 없습니다. {unavailable_reason or "kiwipiepy_model is missing or unavailable."}')
+                st.warning(f'Kiwi 분석기를 사용할 수 없습니다. {unavailable_reason or "kiwipiepy_model이 누락되었거나 사용할 수 없습니다."}')
             elif selected_analyzer == 'Kiwi':
                 st.caption('권장 기본값 · 한국어 명사 추출이 비교적 정교합니다.')
             elif selected_analyzer == 'MeCab' and not selected_analyzer_available:
