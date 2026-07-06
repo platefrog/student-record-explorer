@@ -585,6 +585,87 @@ def apply_ui_style():
             font-size: .82rem;
             font-weight: 800;
         }
+        .sre-footer-card {
+            border: 1px solid rgba(148,163,184,.28);
+            border-radius: 14px;
+            background: rgba(15,23,42,.34);
+            padding: 1rem 1.1rem .9rem;
+            margin-top: .2rem;
+        }
+        .sre-footer-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+            gap: 1rem 1.6rem;
+            align-items: start;
+        }
+        .sre-footer-brand {
+            font-size: .78rem;
+            letter-spacing: .07em;
+            text-transform: uppercase;
+            opacity: .72;
+            font-weight: 700;
+            margin-bottom: .46rem;
+        }
+        .sre-footer-title {
+            font-size: 1.72rem;
+            letter-spacing: -0.03em;
+            font-weight: 900;
+            margin: 0 0 .42rem 0;
+            line-height: 1.1;
+        }
+        .sre-footer-subtitle {
+            font-size: .94rem;
+            opacity: .8;
+            margin: 0;
+            line-height: 1.52;
+        }
+        .sre-footer-author {
+            font-size: 1.2rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            margin: 0 0 .42rem 0;
+        }
+        .sre-footer-role {
+            opacity: .78;
+            font-weight: 700;
+        }
+        .sre-footer-meta {
+            font-size: .91rem;
+            opacity: .84;
+            margin: .16rem 0;
+            line-height: 1.5;
+        }
+        .sre-footer-email a {
+            color: #60A5FA;
+            text-decoration: none;
+            font-weight: 700;
+        }
+        .sre-footer-email a:hover {
+            text-decoration: underline;
+        }
+        .sre-footer-legal {
+            margin-top: .9rem;
+            padding-top: .75rem;
+            border-top: 1px solid rgba(148,163,184,.22);
+            font-size: .86rem;
+            opacity: .8;
+            line-height: 1.58;
+        }
+        .sre-footer-copyright {
+            margin-top: .5rem;
+            font-size: .84rem;
+            opacity: .7;
+            letter-spacing: .01em;
+        }
+        @media (max-width: 920px) {
+            .sre-footer-grid {
+                grid-template-columns: 1fr;
+                gap: .85rem;
+            }
+            .sre-footer-title {
+                font-size: 1.46rem;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -855,27 +936,34 @@ def render_full_user_guide():
 
 def render_footer():
     st.divider()
-    with st.container(border=True):
-        product, author = st.columns([0.8, 1.2])
-        with product:
-            st.caption('STUDENT RECORD EXPLORER')
-            st.markdown('#### 학생부 탐색기')
-            st.caption('교육 현장을 위한 학생부 텍스트 분석 도구')
-        with author:
-            st.markdown('**박효진** · 개발 · 연구')
-            st.caption('경남대학교 국어교육과 박사과정')
-            st.caption('거제상문고등학교 교사')
-            st.caption('losaci@naver.com')
-
-        st.caption(
-            '본 프로그램은 학교생활기록부 서술형 기록의 교육적 탐색을 지원하기 위한 연구·교육용 도구입니다. '
-            '실제 학생 자료를 사용할 때에는 개인정보 보호, 비식별화, 기관 지침 및 연구윤리 절차를 준수해야 합니다. '
-            '분석 결과는 진로 결정이나 평가의 최종 판단이 아니라 교사의 기록 탐색과 상담을 돕는 참고자료입니다.'
-        )
-        st.caption(
-            f'Student Record Explorer v{APP_VERSION} · For educational & research use · '
-            'Copyright © Park Hyojin. All rights reserved.'
-        )
+    st.markdown(
+        f"""
+        <div class="sre-footer-card">
+          <div class="sre-footer-grid">
+            <div>
+              <div class="sre-footer-brand">Student Record Explorer</div>
+              <div class="sre-footer-title">학생부 탐색기</div>
+              <p class="sre-footer-subtitle">교육 현장을 위한 학생부 텍스트 분석 도구</p>
+            </div>
+            <div>
+              <div class="sre-footer-author">박효진 <span class="sre-footer-role">· 개발 · 연구</span></div>
+              <p class="sre-footer-meta">경남대학교 국어교육과 박사과정</p>
+              <p class="sre-footer-meta">거제상문고등학교 교사</p>
+              <p class="sre-footer-meta sre-footer-email"><a href="mailto:losaci@naver.com">losaci@naver.com</a></p>
+            </div>
+          </div>
+          <div class="sre-footer-legal">
+            본 프로그램은 학교생활기록부 서술형 기록의 교육적 탐색을 지원하기 위한 연구·교육용 도구입니다.
+            실제 학생 자료를 사용할 때에는 개인정보 보호, 비식별화, 기관 지침 및 연구윤리 절차를 준수해야 합니다.
+            분석 결과는 진로 결정이나 평가의 최종 판단이 아니라 교사의 기록 탐색과 상담을 돕는 참고자료입니다.
+          </div>
+          <div class="sre-footer-copyright">
+            Student Record Explorer v{APP_VERSION} · For educational &amp; research use · Copyright &copy; Park Hyojin. All rights reserved.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 def is_student_row(vals):
     return len(vals)>=2 and NO_RE.match(clean(vals[0]) or '') and NAME_RE.match(clean(vals[1]) or '')
