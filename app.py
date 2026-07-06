@@ -591,41 +591,6 @@ def apply_ui_style():
     )
 
 
-def apply_theme_mode(mode: str) -> None:
-    is_dark = (mode or 'dark') == 'dark'
-    if is_dark:
-        st.markdown(
-            """
-            <style>
-            .stApp, [data-testid="stAppViewContainer"] {background-color:#0B1220; color:#E5E7EB;}
-            [data-testid="stHeader"] {background:rgba(11,18,32,.88);}
-            [data-testid="stSidebar"] {background-color:#111827; color:#E5E7EB;}
-            [data-testid="stSidebar"] * {color:#E5E7EB;}
-            div[data-baseweb="input"] > div,
-            div[data-baseweb="select"] > div,
-            div[data-baseweb="textarea"] > div {
-                background-color:#0F172A;
-                color:#E5E7EB;
-                border-color:rgba(148,163,184,.32);
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            """
-            <style>
-            .stApp, [data-testid="stAppViewContainer"] {background-color:#F8FAFC; color:#0F172A;}
-            [data-testid="stHeader"] {background:rgba(248,250,252,.9);}
-            [data-testid="stSidebar"] {background-color:#EEF2F7; color:#0F172A;}
-            [data-testid="stSidebar"] * {color:#0F172A;}
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
 def card_open(title: str, caption: str = ''):
     # Streamlit 위젯을 HTML div로 감싸면 빈 테두리 박스가 생길 수 있어,
     # 섹션 제목/설명만 렌더링합니다.
@@ -1494,10 +1459,7 @@ def initialize_session_from_disk() -> None:
 def main():
     ensure_files()
     st.set_page_config('StudentRecord Explorer', layout='wide')
-    if 'theme_mode' not in st.session_state:
-        st.session_state['theme_mode'] = 'dark'
     apply_ui_style()
-    apply_theme_mode(st.session_state.get('theme_mode', 'dark'))
     initialize_session_from_disk()
     st.title('학생부 탐색기')
     st.caption('학생부의 정성적 서술 영역을 텍스트 마이닝으로 구조화·정량화하여, 교사의 신속하고 근거 있는 학생부 탐색을 돕습니다.')
@@ -1515,13 +1477,6 @@ def main():
     # ------------------------------------------------------------------
     st.sidebar.header('1. 데이터 불러오기')
     render_sidebar_privacy_notice()
-    st.sidebar.selectbox(
-        '화면 테마',
-        ['dark', 'light'],
-        key='theme_mode',
-        format_func=lambda value: '다크' if value == 'dark' else '라이트',
-        help='기본은 다크 모드입니다. 변경 시 화면이 바로 새로고침됩니다.',
-    )
 
     cache_file_sidebar = st.sidebar.file_uploader(
         '전처리된 학생부 파일(.zip/.xlsx/.db)',
