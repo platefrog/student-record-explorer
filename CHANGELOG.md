@@ -1,5 +1,10 @@
 # 변경 이력
 
+## v1.0.6
+
+- 하단 명함 카드 영역의 좌우 정렬과 타이포 계층을 개선했습니다.
+- 저작권/안내 문구의 가독성을 높이고 모바일 폭에서도 레이아웃이 안정적으로 보이도록 조정했습니다.
+
 ## v1.0.5
 
 - Added dependency audit for bundled analyzers and Kiwi model runtime checks.
