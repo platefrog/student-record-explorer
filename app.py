@@ -23,9 +23,12 @@ from careernet_corpus import (
 try:
     from kiwipiepy import Kiwi
     KIWI_OK = True
-except Exception:
+    KIWI_IMPORT_ERROR = ''
+except Exception as exc:
     Kiwi = None
     KIWI_OK = False
+    KIWI_IMPORT_ERROR = f'{type(exc).__name__}: {exc}'
+KIWI_RUNTIME_ERROR = ''
 
 MECAB_BACKEND = ''
 try:
@@ -277,7 +280,16 @@ def normalize_token_surface(t: str) -> str:
 
 @st.cache_resource(show_spinner=False)
 def get_kiwi():
-    return Kiwi() if KIWI_OK else None
+    global KIWI_RUNTIME_ERROR
+    if not KIWI_OK:
+        return None
+    try:
+        kiwi = Kiwi()
+        KIWI_RUNTIME_ERROR = ''
+        return kiwi
+    except Exception as exc:
+        KIWI_RUNTIME_ERROR = f'{type(exc).__name__}: {exc}'
+        return None
 
 
 @st.cache_resource(show_spinner=False)
@@ -302,7 +314,23 @@ def analyzer_name(setting: Any) -> str:
 
 def analyzer_available(setting: Any) -> bool:
     name = analyzer_name(setting)
-    return (name != 'Kiwi' or KIWI_OK) and (name != 'MeCab' or MECAB_OK)
+    if name == 'Kiwi':
+        return get_kiwi() is not None
+    if name == 'MeCab':
+        return MECAB_OK
+    return True
+
+
+def analyzer_unavailable_reason(setting: Any) -> str:
+    name = analyzer_name(setting)
+    if name == 'Kiwi':
+        if KIWI_IMPORT_ERROR:
+            return KIWI_IMPORT_ERROR
+        if KIWI_RUNTIME_ERROR:
+            return KIWI_RUNTIME_ERROR
+    elif name == 'MeCab' and not MECAB_OK:
+        return 'MeCab is not installed.'
+    return ''
 
 
 def tokenize(text: str, stop: set[str], syn: dict[str,str], min_len=2, analyzer='Kiwi') -> List[str]:
@@ -1732,8 +1760,24 @@ def main():
                 key='preprocess_analyzer',
                 help='전처리 결과에 기록되며, 이후 학생 분석에서도 같은 방식을 사용합니다.',
             )
+            with st.expander('Analyzer setup help', expanded=False):
+                st.markdown(
+                    '- Included in release: `Kiwi` + `kiwipiepy_model` (recommended)\n'
+                    '- Included in release: `Rule-based tokenizer` (no extra install)\n'
+                    '- Not bundled by default: `MeCab` (optional)\n'
+                    '\n'
+                    'To use MeCab:\n'
+                    '1. Install a Python wrapper (`mecab_ko` or `mecab`).\n'
+                    '2. Install the MeCab engine and dictionary on Windows.\n'
+                    '3. Restart this app and choose `MeCab` in the analyzer list.\n'
+                    '\n'
+                    'If MeCab is unavailable, use `Kiwi` for the default stable path.'
+                )
             selected_analyzer_available = analyzer_available(selected_analyzer)
-            if selected_analyzer == 'Kiwi':
+            unavailable_reason = analyzer_unavailable_reason(selected_analyzer)
+            if selected_analyzer == 'Kiwi' and not selected_analyzer_available:
+                st.warning(f'Kiwi 분석기를 사용할 수 없습니다. {unavailable_reason or "kiwipiepy_model is missing or unavailable."}')
+            elif selected_analyzer == 'Kiwi':
                 st.caption('권장 기본값 · 한국어 명사 추출이 비교적 정교합니다.')
             elif selected_analyzer == 'MeCab' and not selected_analyzer_available:
                 st.warning('현재 실행 환경에는 한국어 MeCab이 설치되어 있지 않아 선택할 수 없습니다. Kiwi 또는 간이 토큰화를 사용해 주세요.')

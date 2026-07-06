@@ -12,25 +12,31 @@ if not exist "%PYTHON%" (
     if errorlevel 1 goto ERROR
 )
 
-echo [1/5] Installing build requirements...
+echo [1/6] Installing build requirements...
 "%PYTHON%" -m pip install -r requirements.txt
 if errorlevel 1 goto ERROR
 
-echo [2/5] Verifying source and cleaning old build artifacts...
+echo [2/6] Auditing dependency readiness...
+"%PYTHON%" scripts\dependency_audit.py --check-source
+if errorlevel 1 goto ERROR
+
+echo [3/6] Verifying source and cleaning old build artifacts...
 "%PYTHON%" scripts\release_verify.py --check
 if errorlevel 1 goto ERROR
 "%PYTHON%" scripts\release_verify.py --clean
 if errorlevel 1 goto ERROR
 
-echo [3/5] Building StudentRecordExplorer.exe...
+echo [4/6] Building StudentRecordExplorer.exe...
 "%PYTHON%" -m PyInstaller StudentRecordExplorer.spec --clean --noconfirm
 if errorlevel 1 goto ERROR
 
-echo [4/5] Creating portable ZIP...
+echo [5/6] Validating packaged dependencies and creating portable ZIP...
+"%PYTHON%" scripts\dependency_audit.py --check-build --version %APP_VERSION%
+if errorlevel 1 goto ERROR
 "%PYTHON%" scripts\release_verify.py --archive
 if errorlevel 1 goto ERROR
 
-echo [5/5] Creating installer and verifying artifacts...
+echo [6/6] Creating installer and verifying artifacts...
 set "ISCC="
 if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"

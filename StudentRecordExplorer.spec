@@ -22,7 +22,7 @@ def runtime_submodule(name):
     return not parts.intersection({'test', 'tests', 'testing', 'conftest'})
 
 
-for pkg in ['streamlit', 'pandas', 'sklearn', 'wordcloud', 'matplotlib', 'kiwipiepy', 'requests', 'openpyxl']:
+for pkg in ['streamlit', 'pandas', 'sklearn', 'wordcloud', 'matplotlib', 'kiwipiepy', 'kiwipiepy_model', 'requests', 'openpyxl']:
     try:
         d, b, h = collect_all(
             pkg,

@@ -1,5 +1,10 @@
 # 변경 이력
 
+## v1.0.4
+
+- Added dependency audit for bundled analyzers and Kiwi model runtime checks.
+- Added explicit analyzer setup guidance for optional MeCab installation path.
+
 ## v1.0.3
 
 - 하단 정보를 Streamlit 기본 구성요소로 변경하여 HTML 코드가 그대로 노출될 가능성 제거
