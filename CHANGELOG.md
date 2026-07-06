@@ -1,6 +1,6 @@
 # 변경 이력
 
-## v1.0.4
+## v1.0.5
 
 - Added dependency audit for bundled analyzers and Kiwi model runtime checks.
 - Added explicit analyzer setup guidance for optional MeCab installation path.
