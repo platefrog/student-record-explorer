@@ -55,6 +55,7 @@ DATA_DIR = Path(os.environ.get('SRE_DATA_DIR', str(BUNDLED_DATA_DIR))).expanduse
 DB_PATH = DATA_DIR / 'major_corpus.db'
 STOPWORDS_PATH = DATA_DIR / 'stopwords.txt'
 SYNONYMS_PATH = DATA_DIR / 'synonyms.txt'
+STUDENT_CACHE_PATH = DATA_DIR / 'student_cache_latest.db'
 
 DEFAULT_STOPWORDS = set('''학생 활동 수업 참여 통해 대한 관련 내용 주제 과정 보고서 탐구 발표 작성 자신 능력 모습 학습 이해 설명 자료 분석 의견 생각 학교 교사 진로 학과 계열 교육 흥미 적성 직업 특성 개요 주요 분야 졸업 진출 사항 기록'''.split())
 NAME_RE = re.compile(r'^[가-힣]{2,5}$')
@@ -1329,6 +1330,30 @@ def load_student_cache(uploaded) -> Optional[Dict[str, pd.DataFrame]]:
     return None
 
 
+def save_student_cache_db(cache: Dict[str, pd.DataFrame], path: Path = STUDENT_CACHE_PATH) -> None:
+    if not isinstance(cache, dict):
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        for key in ['records', 'tfidf', 'freq', 'evidence', 'meta']:
+            df = cache.get(key)
+            if isinstance(df, pd.DataFrame):
+                df.fillna('').to_sql(key, conn, if_exists='replace', index=False)
+
+
+def load_student_cache_db(path: Path = STUDENT_CACHE_PATH) -> Optional[Dict[str, pd.DataFrame]]:
+    if not path.exists():
+        return None
+    result: Dict[str, pd.DataFrame] = {}
+    with sqlite3.connect(path) as conn:
+        for key in ['records', 'tfidf', 'freq', 'evidence', 'meta']:
+            try:
+                result[key] = pd.read_sql(f'select * from {key}', conn).fillna('')
+            except Exception:
+                pass
+    return normalize_student_cache_identity(result) if result else None
+
+
 def parse_uploaded_records(
     f_ch,
     f_se,
@@ -1394,10 +1419,48 @@ def get_active_cache(merged: pd.DataFrame, scope: str, stop: set[str], syn: dict
     return {}
 
 
+def initialize_session_from_disk() -> None:
+    if st.session_state.get('_startup_restore_done'):
+        return
+    with st.status('저장된 데이터 확인 중입니다.', expanded=False) as startup_status:
+        startup_progress = st.progress(0, text='환경 설정을 확인하는 중입니다.')
+        startup_progress.progress(0.20, text='말뭉치 저장본을 확인하는 중입니다.')
+        loaded_corpus = False
+        if not isinstance(st.session_state.get('major_corpus_df'), pd.DataFrame) and DB_PATH.exists():
+            try:
+                major_df = load_db()
+                if not major_df.empty:
+                    st.session_state['major_corpus_df'] = major_df
+                    st.session_state['major_corpus_name'] = f'자동 불러오기: {DB_PATH.name}'
+                    loaded_corpus = True
+            except Exception:
+                pass
+
+        startup_progress.progress(0.55, text='전처리 캐시 저장본을 확인하는 중입니다.')
+        loaded_cache = False
+        if not isinstance(st.session_state.get('student_cache'), dict):
+            try:
+                cached = load_student_cache_db()
+                if isinstance(cached, dict) and not cached.get('records', pd.DataFrame()).empty:
+                    st.session_state['student_cache'] = cached
+                    st.session_state['student_cache_name'] = f'자동 불러오기: {STUDENT_CACHE_PATH.name}'
+                    loaded_cache = True
+            except Exception:
+                pass
+
+        startup_progress.progress(1.0, text='초기 확인이 완료되었습니다.')
+        if loaded_corpus or loaded_cache:
+            startup_status.update(label='저장된 데이터를 자동으로 불러왔습니다.', state='complete', expanded=False)
+        else:
+            startup_status.update(label='자동 불러올 저장 데이터가 없어 기본 상태로 시작합니다.', state='complete', expanded=False)
+    st.session_state['_startup_restore_done'] = True
+
+
 def main():
     ensure_files()
     st.set_page_config('StudentRecord Explorer', layout='wide')
     apply_ui_style()
+    initialize_session_from_disk()
     st.title('학생부 탐색기')
     st.caption('학생부의 정성적 서술 영역을 텍스트 마이닝으로 구조화·정량화하여, 교사의 신속하고 근거 있는 학생부 탐색을 돕습니다.')
     render_first_use_guide()
@@ -1428,6 +1491,7 @@ def main():
                 st.session_state['student_cache'] = cache
                 st.session_state['student_cache_name'] = cache_file_sidebar.name
                 st.session_state['student_cache_upload_signature'] = cache_signature
+                save_student_cache_db(cache)
 
     corpus_file = st.sidebar.file_uploader(
         '학과 말뭉치(.db/.csv/.xlsx)',
@@ -1443,6 +1507,7 @@ def main():
                     st.session_state['major_corpus_df'] = major_df_sidebar
                     st.session_state['major_corpus_name'] = corpus_file.name
                     st.session_state['major_corpus_upload_signature'] = corpus_signature
+                    save_db(major_df_sidebar)
             except Exception as e:
                 st.sidebar.error(f'말뭉치 파일을 읽지 못했습니다: {e}')
 
@@ -1812,6 +1877,7 @@ def main():
                         )
                         st.session_state['student_cache'] = cache
                         st.session_state['student_cache_name'] = '현재 세션에서 생성한 캐시'
+                        save_student_cache_db(cache)
                         preprocess_status.update(
                             label=f'전처리 완료 · 학생 {len(merged)}명',
                             state='complete',
@@ -1902,6 +1968,7 @@ def main():
                             )
                         st.session_state['major_corpus_df'] = collected
                         st.session_state['major_corpus_name'] = '커리어넷에서 현재 세션에 수집한 말뭉치'
+                        save_db(collected)
                         major_df = collected
                         prepare_major_index.clear()
                         st.success('수집과 영역별 말뭉치 가공이 완료되었습니다. 아래에서 내용을 확인한 뒤 내장 DB로 저장하세요.')
