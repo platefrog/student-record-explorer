@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 import io, re, html, os, sqlite3, platform, time, json, zipfile, shutil, threading
 from pathlib import Path
@@ -688,23 +688,23 @@ def render_status_card(student_count: int, scope: str, changche_count: int, setu
     html_block = f"""
     <div class="sre-card">
       <div class="sre-section-title">분석 현황</div>
-      <div class="sre-section-caption">현재 업로드된 학생부 자료와 분석 범위입니다.</div>
+      <div class="sre-section-caption">현재 업로드된 학생부 자료 현황입니다.</div>
       <div style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .85rem;">
         <div class="sre-status-item">
-          <div class="sre-status-label">학생 수</div>
+          <div class="sre-status-label">전체</div>
           <div class="sre-status-value">{student_count:,}명</div>
         </div>
         <div class="sre-status-item">
-          <div class="sre-status-label">분석 범위</div>
-          <div class="sre-status-value">{scope}</div>
-        </div>
-        <div class="sre-status-item">
-          <div class="sre-status-label">창체 보유</div>
+          <div class="sre-status-label">창체</div>
           <div class="sre-status-value">{changche_count:,}명</div>
         </div>
         <div class="sre-status-item">
-          <div class="sre-status-label">교과세특 / 행발</div>
-          <div class="sre-status-value">{setuk_count:,} / {haengbal_count:,}</div>
+          <div class="sre-status-label">교과</div>
+          <div class="sre-status-value">{setuk_count:,}명</div>
+        </div>
+        <div class="sre-status-item">
+          <div class="sre-status-label">행발</div>
+          <div class="sre-status-value">{haengbal_count:,}명</div>
         </div>
       </div>
     </div>
@@ -1666,8 +1666,30 @@ def main():
             l, r = st.columns([0.95, 2.05])
             with l:
                 card_open('학생 선택', '분석할 학생과 원문 확인 범위를 선택합니다.')
+                grade_col, class_col, _, _ = STUDENT_ID_COLUMNS
+                grade_values = sorted(
+                    [g for g in records[grade_col].astype(str).str.strip().unique().tolist() if g],
+                    key=lambda x: int(x) if str(x).isdigit() else str(x),
+                )
+                grade_options = ['전체'] + grade_values
+                selected_grade = st.selectbox('학년 필터', grade_options, key='analysis_grade_filter')
+
+                class_base = records if selected_grade == '전체' else records[records[grade_col].astype(str) == selected_grade]
+                class_values = sorted(
+                    [c for c in class_base[class_col].astype(str).str.strip().unique().tolist() if c],
+                    key=lambda x: int(x) if str(x).isdigit() else str(x),
+                )
+                class_options = ['전체'] + class_values
+                selected_class = st.selectbox('반 필터', class_options, key='analysis_class_filter')
+
                 q = st.text_input('학생 검색', key='analysis_student_search')
-                labels = {idx: student_label(row) for idx, row in records.iterrows()}
+                filtered_records = records
+                if selected_grade != '전체':
+                    filtered_records = filtered_records[filtered_records[grade_col].astype(str) == selected_grade]
+                if selected_class != '전체':
+                    filtered_records = filtered_records[filtered_records[class_col].astype(str) == selected_class]
+
+                labels = {idx: student_label(row) for idx, row in filtered_records.iterrows()}
                 student_options = [idx for idx, label in labels.items() if not q or q in label]
                 if not student_options:
                     st.warning('검색 결과가 없습니다.')
@@ -2134,3 +2156,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

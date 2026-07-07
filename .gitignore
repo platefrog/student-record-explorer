@@ -16,6 +16,13 @@ data/_tmp_corpus.db
 data/_download.db
 data/_uploaded_student_cache.db
 data/_student_cache_download.db
+data/student_cache_latest.db
+*.broken_backup
+*.broken_backup2
+.head_app.py
+.head_app_utf8.py
+.tmp_streamlit.out.log
+.tmp_streamlit.err.log
 
 # Local secrets
 .env
