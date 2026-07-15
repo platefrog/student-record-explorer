@@ -56,6 +56,8 @@ DB_PATH = DATA_DIR / 'major_corpus.db'
 STOPWORDS_PATH = DATA_DIR / 'stopwords.txt'
 SYNONYMS_PATH = DATA_DIR / 'synonyms.txt'
 STUDENT_CACHE_PATH = DATA_DIR / 'student_cache_latest.db'
+WORDCLOUD_TFIDF_TERMS = 80
+DOWNLOAD_FILE_LOCK = threading.Lock()
 
 DEFAULT_STOPWORDS = set('''학생 활동 수업 참여 통해 대한 관련 내용 주제 과정 보고서 탐구 발표 작성 자신 능력 모습 학습 이해 설명 자료 분석 의견 생각 학교 교사 진로 학과 계열 교육 흥미 적성 직업 특성 개요 주요 분야 졸업 진출 사항 기록'''.split())
 NAME_RE = re.compile(r'^[가-힣]{2,5}$')
@@ -194,6 +196,30 @@ def student_label(student: pd.Series) -> str:
     return ' '.join(parts)
 
 
+def student_identity(student: pd.Series) -> Tuple[str, ...]:
+    return tuple(
+        normalize_school_number(student.get(column, '')) if column != '성명' else clean(student.get(column, ''))
+        for column in STUDENT_ID_COLUMNS
+    )
+
+
+def find_student_by_identity(records: pd.DataFrame, identity: Any) -> Optional[pd.Series]:
+    if not isinstance(identity, (tuple, list)) or len(identity) != len(STUDENT_ID_COLUMNS):
+        return None
+    probe = pd.Series(dict(zip(STUDENT_ID_COLUMNS, identity)))
+    matched = records[student_mask(records, probe)]
+    return matched.iloc[0] if not matched.empty else None
+
+
+def mark_analysis_student_selection_dirty() -> None:
+    st.session_state['analysis_student_selection_dirty'] = True
+
+
+def reset_analysis_student_selection() -> None:
+    st.session_state.pop('analysis_committed_student_identity', None)
+    st.session_state['analysis_student_selection_dirty'] = True
+
+
 def read_stopwords(extra='') -> set[str]:
     ensure_files(); words = set(DEFAULT_STOPWORDS)
     for p in [STOPWORDS_PATH]:
@@ -313,10 +339,10 @@ def analyzer_name(setting: Any) -> str:
     return '간이 토큰화'
 
 
-def analyzer_available(setting: Any) -> bool:
+def analyzer_available(setting: Any, initialize: bool = True) -> bool:
     name = analyzer_name(setting)
     if name == 'Kiwi':
-        return get_kiwi() is not None
+        return KIWI_OK if not initialize else get_kiwi() is not None
     if name == 'MeCab':
         return MECAB_OK
     return True
@@ -1085,19 +1111,20 @@ def font_path():
     return None
 
 
+@st.cache_data(show_spinner=False, max_entries=64)
 def wordcloud_fig(freq: Dict[str,float]):
     if not freq: return None
     wc=WordCloud(font_path=font_path(), width=1400, height=760, background_color='white', collocations=False, max_words=120, random_state=42, margin=8).generate_from_frequencies(freq)
     fig,ax=plt.subplots(figsize=(10.5,5.7)); ax.imshow(wc, interpolation='bilinear'); ax.axis('off'); fig.tight_layout(pad=0); return fig
 
 
-def tfidf_table(df, col, stop, syn, min_len, use_kiwi):
+def tfidf_table(df, col, stop, syn, min_len, use_kiwi, top_n=WORDCLOUD_TFIDF_TERMS):
     docs=[tokenized(x, stop, syn, min_len, use_kiwi) for x in df[col].fillna('').astype(str)]
     if not any(docs): return pd.DataFrame(), None, None
     vec=TfidfVectorizer(token_pattern=r'(?u)\b\w+\b'); mat=vec.fit_transform(docs); terms=vec.get_feature_names_out(); rows=[]
     for i,row in df.iterrows():
         scores=mat[i].toarray().ravel()
-        for rank,idx in enumerate(scores.argsort()[::-1][:30],1):
+        for rank,idx in enumerate(scores.argsort()[::-1][:top_n],1):
             if scores[idx] > 0:
                 identity = {column: row.get(column, '') for column in STUDENT_ID_COLUMNS}
                 rows.append({**identity, '순위':rank, '단어':terms[idx], 'TF-IDF':round(float(scores[idx]),4)})
@@ -1290,7 +1317,10 @@ def build_student_cache(
     records = ensure_student_identity_columns(merged).fillna('')
     if progress_callback:
         progress_callback(0.10, '전체 학생의 TF-IDF 특징어를 계산하는 중입니다.')
-    tfidf_df, _, _ = tfidf_table(records, scope, stop, syn, min_len, use_kiwi)
+    tfidf_term_limit = max(top_n, WORDCLOUD_TFIDF_TERMS)
+    tfidf_df, _, _ = tfidf_table(
+        records, scope, stop, syn, min_len, use_kiwi, top_n=tfidf_term_limit
+    )
     if progress_callback:
         progress_callback(0.35, '학생별 빈도와 근거 문장을 만드는 중입니다.')
 
@@ -1337,6 +1367,7 @@ def build_student_cache(
         '생성시각': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
         '최소단어길이': min_len,
         '형태소분석기': analyzer_name(use_kiwi),
+        'TF-IDF상위단어수': tfidf_term_limit,
     }])
     result = {'records': records, 'tfidf': tfidf_df, 'freq': freq_df, 'evidence': evidence_df, 'meta': meta_df}
     if progress_callback:
@@ -1373,11 +1404,19 @@ def cache_to_excel(cache: Dict[str, pd.DataFrame]) -> bytes:
 def cache_to_db(cache: Dict[str, pd.DataFrame]) -> bytes:
     tmp = DATA_DIR / '_student_cache_download.db'
     DATA_DIR.mkdir(exist_ok=True)
-    with sqlite3.connect(tmp) as conn:
-        for key, df in cache.items():
-            if isinstance(df, pd.DataFrame):
-                df.fillna('').to_sql(key, conn, if_exists='replace', index=False)
-    return tmp.read_bytes()
+    with DOWNLOAD_FILE_LOCK:
+        with sqlite3.connect(tmp) as conn:
+            for key, df in cache.items():
+                if isinstance(df, pd.DataFrame):
+                    df.fillna('').to_sql(key, conn, if_exists='replace', index=False)
+        return tmp.read_bytes()
+
+
+def corpus_to_db_bytes(df: pd.DataFrame) -> bytes:
+    tmp = DATA_DIR / '_download.db'
+    with DOWNLOAD_FILE_LOCK:
+        save_db(df, tmp)
+        return tmp.read_bytes()
 
 
 def load_student_cache(uploaded) -> Optional[Dict[str, pd.DataFrame]]:
@@ -1581,6 +1620,7 @@ def main():
                 st.session_state['student_cache'] = cache
                 st.session_state['student_cache_name'] = cache_file_sidebar.name
                 st.session_state['student_cache_upload_signature'] = cache_signature
+                reset_analysis_student_selection()
                 save_student_cache_db(cache)
 
     corpus_file = st.sidebar.file_uploader(
@@ -1655,7 +1695,7 @@ def main():
             records = ensure_student_identity_columns(cache.get('records', pd.DataFrame())).fillna('')
             tfidf_df = ensure_student_identity_columns(cache.get('tfidf', pd.DataFrame())).fillna('')
             freq_df = ensure_student_identity_columns(cache.get('freq', pd.DataFrame())).fillna('')
-            evidence_df = ensure_student_identity_columns(cache.get('evidence', pd.DataFrame())).fillna('')
+            evidence_df = cache.get('evidence', pd.DataFrame())
 
             render_status_card(
                 len(records),
@@ -1668,13 +1708,18 @@ def main():
             l, r = st.columns([0.95, 2.05])
             with l:
                 card_open('학생 선택', '분석할 학생과 원문 확인 범위를 선택합니다.')
-                grade_col, class_col, _, _ = STUDENT_ID_COLUMNS
+                grade_col, class_col, number_col, _ = STUDENT_ID_COLUMNS
                 grade_values = sorted(
                     [g for g in records[grade_col].astype(str).str.strip().unique().tolist() if g],
                     key=lambda x: int(x) if str(x).isdigit() else str(x),
                 )
                 grade_options = ['전체'] + grade_values
-                selected_grade = st.selectbox('학년 필터', grade_options, key='analysis_grade_filter')
+                selected_grade = st.selectbox(
+                    '학년 필터',
+                    grade_options,
+                    key='analysis_grade_filter',
+                    on_change=mark_analysis_student_selection_dirty,
+                )
 
                 class_base = records if selected_grade == '전체' else records[records[grade_col].astype(str) == selected_grade]
                 class_values = sorted(
@@ -1682,96 +1727,207 @@ def main():
                     key=lambda x: int(x) if str(x).isdigit() else str(x),
                 )
                 class_options = ['전체'] + class_values
-                selected_class = st.selectbox('반 필터', class_options, key='analysis_class_filter')
+                selected_class = st.selectbox(
+                    '반 필터',
+                    class_options,
+                    key='analysis_class_filter',
+                    on_change=mark_analysis_student_selection_dirty,
+                )
 
-                q = st.text_input('학생 검색', key='analysis_student_search')
+                number_base = class_base
+                if selected_class != '전체':
+                    number_base = number_base[number_base[class_col].astype(str) == selected_class]
+                number_values = sorted(
+                    [
+                        number
+                        for number in number_base[number_col].astype(str).str.strip().unique().tolist()
+                        if number
+                    ],
+                    key=lambda x: int(x) if str(x).isdigit() else str(x),
+                )
+                number_options = ['전체'] + number_values
+                selected_number = st.selectbox(
+                    '번호 필터',
+                    number_options,
+                    key='analysis_number_filter',
+                    on_change=mark_analysis_student_selection_dirty,
+                )
+
+                q = str(st.session_state.get('analysis_student_search', ''))
                 filtered_records = records
                 if selected_grade != '전체':
                     filtered_records = filtered_records[filtered_records[grade_col].astype(str) == selected_grade]
                 if selected_class != '전체':
                     filtered_records = filtered_records[filtered_records[class_col].astype(str) == selected_class]
+                if selected_number != '전체':
+                    filtered_records = filtered_records[
+                        filtered_records[number_col].astype(str) == selected_number
+                    ]
 
                 labels = {idx: student_label(row) for idx, row in filtered_records.iterrows()}
                 student_options = [idx for idx, label in labels.items() if not q or q in label]
+                selected_index = st.selectbox(
+                    '학생',
+                    student_options,
+                    index=None,
+                    placeholder=(
+                        '조회할 학생을 선택하세요.'
+                        if student_options
+                        else '조건에 맞는 학생이 없습니다.'
+                    ),
+                    format_func=lambda idx: labels[idx],
+                    key='analysis_student_select',
+                    on_change=mark_analysis_student_selection_dirty,
+                    disabled=not student_options,
+                )
+                st.text_input(
+                    '학생 검색',
+                    key='analysis_student_search',
+                    on_change=mark_analysis_student_selection_dirty,
+                )
                 if not student_options:
                     st.warning('검색 결과가 없습니다.')
-                    render_footer()
-                    return
-                selected_index = st.selectbox(
-                    '학생', student_options, format_func=lambda idx: labels[idx], key='analysis_student_select'
+                lookup_submitted = st.button(
+                    '선택한 학생 조회',
+                    type='primary',
+                    use_container_width=True,
+                    key='analysis_student_lookup',
                 )
-                row = records.loc[selected_index]
-                name = str(row.get('성명', ''))
-                label = student_label(row)
-                with st.expander('원문 보기', expanded=False):
-                    for c in ['창체', '교과세특', '행발']:
-                        st.markdown(f'**{c}**')
-                        st.write(row.get(c, '') or '자료 없음')
+
+                if lookup_submitted:
+                    if selected_index is None:
+                        st.warning('먼저 조회할 학생을 선택해 주세요.')
+                    else:
+                        st.session_state['analysis_committed_student_identity'] = student_identity(
+                            records.loc[selected_index]
+                        )
+                        st.session_state['analysis_student_selection_dirty'] = False
+
+                committed_identity = st.session_state.get('analysis_committed_student_identity')
+                committed_row = find_student_by_identity(records, committed_identity)
+                analysis_ready = (
+                    committed_row is not None
+                    and not st.session_state.get('analysis_student_selection_dirty', True)
+                )
+                if committed_identity is not None and committed_row is None:
+                    reset_analysis_student_selection()
+                    analysis_ready = False
+
+                if analysis_ready:
+                    row = committed_row
+                    label = student_label(row)
+                    st.success(f'현재 조회: {label}')
+                    with st.expander('원문 보기', expanded=False):
+                        for c in ['창체', '교과세특', '행발']:
+                            st.markdown(f'**{c}**')
+                            st.write(row.get(c, '') or '자료 없음')
+                else:
+                    row = pd.Series({column: '' for column in records.columns})
+                    label = '학생 미조회'
+                    st.caption('학생을 선택한 뒤 「선택한 학생 조회」를 눌러 주세요.')
                 card_close()
 
+            selected = pd.DataFrame()
+            freq = pd.DataFrame()
             with r:
-                card_open(f'{label} 키워드 분석 · {scope}', '전처리 캐시에서 읽은 TF-IDF와 빈도표를 사용합니다.')
-                selected = tfidf_df[student_mask(tfidf_df, row)] if not tfidf_df.empty else pd.DataFrame()
-                freq = freq_df[student_mask(freq_df, row)] if not freq_df.empty else pd.DataFrame()
-                selected = selected.copy()
-                freq = freq.copy()
-                if 'TF-IDF' in selected.columns:
-                    selected['TF-IDF'] = pd.to_numeric(selected['TF-IDF'], errors='coerce').fillna(0)
-                if '빈도' in freq.columns:
-                    freq['빈도'] = pd.to_numeric(freq['빈도'], errors='coerce').fillna(0).astype(int)
-                wc_dict = dict(zip(selected['단어'], selected['TF-IDF'])) if not selected.empty else dict(zip(freq['단어'], freq['빈도'])) if not freq.empty else {}
-                fig = wordcloud_fig(wc_dict)
-                if fig:
-                    st.pyplot(fig, clear_figure=True, use_container_width=True)
-                    st.caption('글자가 클수록 이 학생의 기록에서 상대적으로 두드러지는 TF-IDF 특징어입니다.')
+                if not analysis_ready:
+                    card_open('학생 조회', '선택을 확정한 뒤 분석을 시작합니다.')
+                    st.info('왼쪽에서 학생을 선택하고 「선택한 학생 조회」를 누르면 결과가 표시됩니다.')
+                    card_close()
                 else:
-                    st.info('워드클라우드를 만들 키워드가 없습니다.')
-                card_close()
+                    card_open(f'{label} 키워드 분석 · {scope}', '전처리 캐시에서 읽은 TF-IDF와 빈도표를 사용합니다.')
+                    selected = tfidf_df[student_mask(tfidf_df, row)] if not tfidf_df.empty else pd.DataFrame()
+                    freq = freq_df[student_mask(freq_df, row)] if not freq_df.empty else pd.DataFrame()
+                    selected = selected.copy()
+                    freq = freq.copy()
+                    if 'TF-IDF' in selected.columns:
+                        selected['TF-IDF'] = pd.to_numeric(selected['TF-IDF'], errors='coerce').fillna(0)
+                    if '빈도' in freq.columns:
+                        freq['빈도'] = pd.to_numeric(freq['빈도'], errors='coerce').fillna(0).astype(int)
+                    wc_dict = dict(zip(selected['단어'], selected['TF-IDF'])) if not selected.empty else dict(zip(freq['단어'], freq['빈도'])) if not freq.empty else {}
+                    fig = wordcloud_fig(wc_dict)
+                    if fig:
+                        st.pyplot(fig, clear_figure=True, use_container_width=True)
+                        st.caption('글자가 클수록 이 학생의 기록에서 상대적으로 두드러지는 TF-IDF 특징어입니다.')
+                    else:
+                        st.info('워드클라우드를 만들 키워드가 없습니다.')
+                    card_close()
 
-            with st.expander('키워드 상세표', expanded=False):
-                tfidf_tab, freq_tab = st.tabs(['TF-IDF 특징어', '단어 빈도'])
-                with tfidf_tab:
-                    tfidf_columns = [column for column in ['순위', '단어', 'TF-IDF'] if column in selected.columns]
-                    st.dataframe(selected[tfidf_columns].head(top_n), use_container_width=True, hide_index=True)
-                with freq_tab:
-                    freq_columns = [column for column in ['순위', '단어', '빈도'] if column in freq.columns]
-                    st.dataframe(freq[freq_columns].head(top_n), use_container_width=True, hide_index=True)
+            if analysis_ready:
+                with st.expander('키워드 상세표', expanded=False):
+                    tfidf_tab, freq_tab = st.tabs(['TF-IDF 특징어', '단어 빈도'])
+                    with tfidf_tab:
+                        tfidf_columns = [column for column in ['순위', '단어', 'TF-IDF'] if column in selected.columns]
+                        if selected.empty or not {'단어', 'TF-IDF'}.issubset(selected.columns):
+                            st.info('표시할 TF-IDF 특징어가 없습니다.')
+                        else:
+                            chart_col, table_col = st.columns([1.15, 1])
+                            with chart_col:
+                                st.markdown('**상위 TF-IDF 특징어**')
+                                chart_data = (
+                                    selected[['단어', 'TF-IDF']]
+                                    .sort_values('TF-IDF', ascending=False)
+                                    .head(min(top_n, 15))
+                                    .copy()
+                                )
+                                st.bar_chart(
+                                    chart_data,
+                                    x='단어',
+                                    y='TF-IDF',
+                                    horizontal=False,
+                                    sort=False,
+                                    color='#EF4444',
+                                    width='stretch',
+                                    height=max(340, len(chart_data) * 28),
+                                )
+                                st.caption('TF-IDF 값이 클수록 해당 학생의 기록에서 상대적으로 더 두드러진 단어입니다.')
+                            with table_col:
+                                st.markdown('**상세 순위**')
+                                st.dataframe(
+                                    selected[tfidf_columns].head(top_n),
+                                    width='stretch',
+                                    height=max(340, len(chart_data) * 28),
+                                    hide_index=True,
+                                )
+                    with freq_tab:
+                        freq_columns = [column for column in ['순위', '단어', '빈도'] if column in freq.columns]
+                        st.dataframe(freq[freq_columns].head(top_n), use_container_width=True, hide_index=True)
 
-            with st.expander('키워드 근거 원문 추적', expanded=False):
-                keyword_candidates = []
-                if not selected.empty and '단어' in selected.columns:
-                    keyword_candidates += selected['단어'].astype(str).tolist()
-                if not freq.empty and '단어' in freq.columns:
-                    keyword_candidates += freq['단어'].astype(str).tolist()
-                keyword_candidates = list(dict.fromkeys([x for x in keyword_candidates if x]))
-                if not keyword_candidates:
-                    st.info('근거를 확인할 키워드가 없습니다.')
-                else:
-                    c1, c2 = st.columns([0.9, 2.1])
-                    with c1:
-                        selected_keyword = st.selectbox('근거를 확인할 키워드', keyword_candidates)
-                        if not evidence_df.empty and '키워드목록' in evidence_df.columns:
-                            pattern = rf'(^|,\s*){re.escape(selected_keyword)}($|,\s*)'
-                            evd = evidence_df[student_mask(evidence_df, row) & evidence_df['키워드목록'].astype(str).str.contains(pattern, regex=True, na=False)].copy()
+                with st.expander('키워드 근거 원문 추적', expanded=False):
+                    keyword_candidates = []
+                    if not selected.empty and '단어' in selected.columns:
+                        keyword_candidates += selected['단어'].astype(str).tolist()
+                    if not freq.empty and '단어' in freq.columns:
+                        keyword_candidates += freq['단어'].astype(str).tolist()
+                    keyword_candidates = list(dict.fromkeys([x for x in keyword_candidates if x]))
+                    if not keyword_candidates:
+                        st.info('근거를 확인할 키워드가 없습니다.')
+                    else:
+                        c1, c2 = st.columns([0.9, 2.1])
+                        with c1:
+                            selected_keyword = st.selectbox('근거를 확인할 키워드', keyword_candidates)
+                            if not evidence_df.empty and '키워드목록' in evidence_df.columns:
+                                pattern = rf'(^|,\s*){re.escape(selected_keyword)}($|,\s*)'
+                                evd = evidence_df[student_mask(evidence_df, row) & evidence_df['키워드목록'].astype(str).str.contains(pattern, regex=True, na=False)].copy()
+                                if not evd.empty:
+                                    evd['등장횟수'] = evd['키워드목록'].astype(str).apply(lambda x: x.split(', ').count(selected_keyword))
+                                    evd['강조원문'] = evd['원문']
+                            else:
+                                evd = keyword_evidence(row, selected_keyword, stop, syn, min_len, effective_analyzer)
+                            st.metric('근거 문장 수', len(evd))
                             if not evd.empty:
-                                evd['등장횟수'] = evd['키워드목록'].astype(str).apply(lambda x: x.split(', ').count(selected_keyword))
-                                evd['강조원문'] = evd['원문']
-                        else:
-                            evd = keyword_evidence(row, selected_keyword, stop, syn, min_len, effective_analyzer)
-                        st.metric('근거 문장 수', len(evd))
-                        if not evd.empty:
-                            st.dataframe(evidence_summary(evd) if '등장횟수' in evd.columns else evd.groupby('출처').size().reset_index(name='문장수'), use_container_width=True, hide_index=True)
-                    with c2:
-                        if evd.empty:
-                            st.info('해당 키워드를 포함하는 근거 문장을 찾지 못했습니다.')
-                        else:
-                            st.markdown(evidence_html(evd, selected_keyword, syn), unsafe_allow_html=True)
+                                st.dataframe(evidence_summary(evd) if '등장횟수' in evd.columns else evd.groupby('출처').size().reset_index(name='문장수'), use_container_width=True, hide_index=True)
+                        with c2:
+                            if evd.empty:
+                                st.info('해당 키워드를 포함하는 근거 문장을 찾지 못했습니다.')
+                            else:
+                                st.markdown(evidence_html(evd, selected_keyword, syn), unsafe_allow_html=True)
 
             # 학과 말뭉치: 사이드바 업로드 → 세션 → 내장 DB 순서로 사용합니다.
             major_df = pd.DataFrame()
-            if isinstance(st.session_state.get('major_corpus_df'), pd.DataFrame):
+            if analysis_ready and isinstance(st.session_state.get('major_corpus_df'), pd.DataFrame):
                 major_df = st.session_state['major_corpus_df']
-            if major_df.empty:
+            if analysis_ready and major_df.empty:
                 major_df = load_db()
 
             if not major_df.empty:
@@ -1864,7 +2020,7 @@ def main():
                             st.dataframe(common, use_container_width=True, hide_index=True)
                     else:
                         st.warning('조건에 맞는 학과가 없습니다.')
-            else:
+            elif analysis_ready:
                 st.info('왼쪽 사이드바에서 학과 말뭉치 DB/CSV/XLSX를 넣거나, 3번 말뭉치 관리 탭에서 내장 DB를 저장하면 학과 유사도 분석이 가능합니다.')
             render_footer()
 
@@ -1917,6 +2073,7 @@ def main():
                     st.session_state['uploaded_records_signature'] = upload_signature
                     st.session_state.pop('student_cache', None)
                     st.session_state.pop('student_cache_name', None)
+                    reset_analysis_student_selection()
                 else:
                     merged = st.session_state.get('uploaded_records', pd.DataFrame())
                     msgs = st.session_state.get('upload_messages', [])
@@ -1952,7 +2109,7 @@ def main():
                     '\n'
                     '설치가 어렵거나 환경 제약이 있으면 기본 경로인 `Kiwi`를 사용하세요.'
                 )
-            selected_analyzer_available = analyzer_available(selected_analyzer)
+            selected_analyzer_available = analyzer_available(selected_analyzer, initialize=False)
             unavailable_reason = analyzer_unavailable_reason(selected_analyzer)
             if selected_analyzer == 'Kiwi' and not selected_analyzer_available:
                 st.warning(f'Kiwi 분석기를 사용할 수 없습니다. {unavailable_reason or "kiwipiepy_model이 누락되었거나 사용할 수 없습니다."}')
@@ -1970,7 +2127,16 @@ def main():
                 st.warning('먼저 왼쪽에 원본 학생부 파일을 업로드해야 전처리를 실행할 수 있습니다.')
             else:
                 st.write(f'대상 학생 수: **{len(merged)}명** / 분석 범위: **{scope}**')
-                if st.button('전처리 실행', type='primary', disabled=not selected_analyzer_available):
+                run_preprocess = st.button(
+                    '전처리 실행', type='primary', disabled=not selected_analyzer_available
+                )
+                runtime_ready = analyzer_available(selected_analyzer) if run_preprocess else True
+                if run_preprocess and not runtime_ready:
+                    st.error(
+                        '형태소 분석기를 시작하지 못했습니다. '
+                        f'{analyzer_unavailable_reason(selected_analyzer) or "설치 상태를 확인해 주세요."}'
+                    )
+                if run_preprocess and runtime_ready:
                     with st.status('학생부 전처리를 시작합니다.', expanded=True) as preprocess_status:
                         preprocess_progress = st.progress(0, text='전처리 준비 중입니다.')
 
@@ -1989,6 +2155,7 @@ def main():
                         )
                         st.session_state['student_cache'] = cache
                         st.session_state['student_cache_name'] = '현재 세션에서 생성한 캐시'
+                        reset_analysis_student_selection()
                         save_student_cache_db(cache)
                         preprocess_status.update(
                             label=f'전처리 완료 · 학생 {len(merged)}명',
@@ -2004,11 +2171,29 @@ def main():
                     m2.metric('TF-IDF 행 수', len(cache.get('tfidf', pd.DataFrame())))
                     m3.metric('근거문장 행 수', len(cache.get('evidence', pd.DataFrame())))
                     if fmt == 'CSV 묶음(zip)':
-                        st.download_button('전처리 결과 ZIP 다운로드', cache_to_zip(cache), 'student_record_cache.zip', 'application/zip')
+                        st.download_button(
+                            '전처리 결과 ZIP 다운로드',
+                            data=lambda current_cache=cache: cache_to_zip(current_cache),
+                            file_name='student_record_cache.zip',
+                            mime='application/zip',
+                            on_click='ignore',
+                        )
                     elif fmt == 'Excel(xlsx)':
-                        st.download_button('전처리 결과 Excel 다운로드', cache_to_excel(cache), 'student_record_cache.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                        st.download_button(
+                            '전처리 결과 Excel 다운로드',
+                            data=lambda current_cache=cache: cache_to_excel(current_cache),
+                            file_name='student_record_cache.xlsx',
+                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                            on_click='ignore',
+                        )
                     else:
-                        st.download_button('전처리 결과 DB 다운로드', cache_to_db(cache), 'student_record_cache.db', 'application/octet-stream')
+                        st.download_button(
+                            '전처리 결과 DB 다운로드',
+                            data=lambda current_cache=cache: cache_to_db(current_cache),
+                            file_name='student_record_cache.db',
+                            mime='application/octet-stream',
+                            on_click='ignore',
+                        )
         render_footer()
 
     # ------------------------------------------------------------------
@@ -2106,11 +2291,29 @@ def main():
                 save_db(major_df)
                 st.success('data/major_corpus.db로 저장했습니다. 이후 오프라인 분석에 사용됩니다.')
             if save_format == 'DB':
-                save_db(major_df, DATA_DIR / '_download.db')
-                st.download_button('DB 다운로드', (DATA_DIR / '_download.db').read_bytes(), 'major_corpus.db')
+                st.download_button(
+                    'DB 다운로드',
+                    data=lambda current_df=major_df: corpus_to_db_bytes(current_df),
+                    file_name='major_corpus.db',
+                    mime='application/octet-stream',
+                    on_click='ignore',
+                )
             else:
-                b, m, n = df_bytes(major_df, save_format)
-                st.download_button(f'{save_format} 다운로드', b, n, m)
+                download_mime = (
+                    'text/csv'
+                    if save_format == 'CSV'
+                    else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                )
+                download_name = 'major_corpus.csv' if save_format == 'CSV' else 'major_corpus.xlsx'
+                st.download_button(
+                    f'{save_format} 다운로드',
+                    data=lambda current_df=major_df, current_format=save_format: df_bytes(
+                        current_df, current_format
+                    )[0],
+                    file_name=download_name,
+                    mime=download_mime,
+                    on_click='ignore',
+                )
         render_footer()
 
     # ------------------------------------------------------------------

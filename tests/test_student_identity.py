@@ -3,7 +3,15 @@ import unittest
 
 import pandas as pd
 
-from app import build_student_cache, merge_records, parse_excel_files, student_mask
+from app import (
+    build_student_cache,
+    find_student_by_identity,
+    merge_records,
+    parse_excel_files,
+    student_identity,
+    student_mask,
+    tfidf_table,
+)
 
 
 class NamedExcel(io.BytesIO):
@@ -22,6 +30,29 @@ def student_file(name: str, detail: str) -> NamedExcel:
 
 
 class StudentIdentityTests(unittest.TestCase):
+    def test_tfidf_table_keeps_richer_wordcloud_terms(self):
+        terms = [chr(97 + index // 26) + chr(97 + index % 26) for index in range(90)]
+        records = pd.DataFrame([{
+            '학년': '3', '반': '1', '번호': '1', '성명': '가학생', '통합': ' '.join(terms)
+        }])
+
+        tfidf, _, _ = tfidf_table(records, '통합', set(), {}, 2, False, top_n=80)
+
+        self.assertEqual(len(tfidf), 80)
+
+    def test_committed_student_identity_finds_the_same_class_record(self):
+        records = pd.DataFrame([
+            {'학년': '3', '반': '1', '번호': '7', '성명': '김민수', '통합': '1반 기록'},
+            {'학년': '3', '반': '2', '번호': '7', '성명': '김민수', '통합': '2반 기록'},
+        ])
+
+        identity = student_identity(records.iloc[1])
+        matched = find_student_by_identity(records, identity)
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched['반'], '2')
+        self.assertEqual(matched['통합'], '2반 기록')
+
     def test_same_name_and_number_in_different_classes_stay_separate(self):
         files = [
             student_file('3-1반 창체.xlsx', '과학 탐구 활동에 성실하게 참여함'),
