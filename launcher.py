@@ -78,6 +78,7 @@ def main() -> int:
         f"--server.port={port}",
         "--global.developmentMode=false",
         "--browser.gatherUsageStats=false",
+        "--theme.base=dark",
     ]
     logging.info('Starting StudentRecord Explorer on 127.0.0.1:%s', port)
     threading.Thread(target=open_browser_when_ready, args=(port,), daemon=True).start()
