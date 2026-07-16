@@ -56,7 +56,7 @@ DB_PATH = DATA_DIR / 'major_corpus.db'
 STOPWORDS_PATH = DATA_DIR / 'stopwords.txt'
 SYNONYMS_PATH = DATA_DIR / 'synonyms.txt'
 STUDENT_CACHE_PATH = DATA_DIR / 'student_cache_latest.db'
-WORDCLOUD_TFIDF_TERMS = 80
+WORDCLOUD_TFIDF_TERMS = 120
 DOWNLOAD_FILE_LOCK = threading.Lock()
 
 DEFAULT_STOPWORDS = set('''학생 활동 수업 참여 통해 대한 관련 내용 주제 과정 보고서 탐구 발표 작성 자신 능력 모습 학습 이해 설명 자료 분석 의견 생각 학교 교사 진로 학과 계열 교육 흥미 적성 직업 특성 개요 주요 분야 졸업 진출 사항 기록'''.split())
@@ -1114,7 +1114,7 @@ def font_path():
 @st.cache_data(show_spinner=False, max_entries=64)
 def wordcloud_fig(freq: Dict[str,float]):
     if not freq: return None
-    wc=WordCloud(font_path=font_path(), width=1400, height=760, background_color='white', collocations=False, max_words=120, random_state=42, margin=8).generate_from_frequencies(freq)
+    wc=WordCloud(font_path=font_path(), width=1600, height=900, background_color='white', collocations=False, max_words=WORDCLOUD_TFIDF_TERMS, random_state=42, margin=6).generate_from_frequencies(freq)
     fig,ax=plt.subplots(figsize=(10.5,5.7)); ax.imshow(wc, interpolation='bilinear'); ax.axis('off'); fig.tight_layout(pad=0); return fig
 
 
