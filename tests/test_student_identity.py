@@ -31,14 +31,14 @@ def student_file(name: str, detail: str) -> NamedExcel:
 
 class StudentIdentityTests(unittest.TestCase):
     def test_tfidf_table_keeps_richer_wordcloud_terms(self):
-        terms = [chr(97 + index // 26) + chr(97 + index % 26) for index in range(90)]
+        terms = [chr(97 + index // 26) + chr(97 + index % 26) for index in range(130)]
         records = pd.DataFrame([{
             '학년': '3', '반': '1', '번호': '1', '성명': '가학생', '통합': ' '.join(terms)
         }])
 
-        tfidf, _, _ = tfidf_table(records, '통합', set(), {}, 2, False, top_n=80)
+        tfidf, _, _ = tfidf_table(records, '통합', set(), {}, 2, False, top_n=120)
 
-        self.assertEqual(len(tfidf), 80)
+        self.assertEqual(len(tfidf), 120)
 
     def test_committed_student_identity_finds_the_same_class_record(self):
         records = pd.DataFrame([
