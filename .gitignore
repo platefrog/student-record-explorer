@@ -24,6 +24,13 @@ data/student_cache_latest.db
 .tmp_streamlit.out.log
 .tmp_streamlit.err.log
 
+# Local research outputs containing student-level analysis
+/local_outputs/
+/local_outputs/case_sampling/
+/local_outputs/case_analysis/
+*_PRIVATE.*
+*.npz
+
 # Local secrets
 .env
 .streamlit/secrets.toml
