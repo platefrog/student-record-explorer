@@ -1,18 +1,25 @@
 ﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
-import io, re, html, os, sqlite3, platform, time, json, zipfile, shutil, threading
+import io, re, html, os, sqlite3, platform, time, json, zipfile, shutil, threading, hashlib, sys
+from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import streamlit as st
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import font_manager as fm
 from matplotlib.patches import Circle, FancyBboxPatch
 from wordcloud import WordCloud
+from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+import sklearn
 
 from careernet_corpus import (
     collect_careernet_corpus,
@@ -56,7 +63,15 @@ DB_PATH = DATA_DIR / 'major_corpus.db'
 STOPWORDS_PATH = DATA_DIR / 'stopwords.txt'
 SYNONYMS_PATH = DATA_DIR / 'synonyms.txt'
 STUDENT_CACHE_PATH = DATA_DIR / 'student_cache_latest.db'
-WORDCLOUD_TFIDF_TERMS = 120
+STUDENT_CACHE_SCHEMA_VERSION = 3
+TFIDF_CACHE_TERM_LIMIT = 120
+TFIDF_DEFAULT_DISPLAY_LIMIT = 30
+TFIDF_WORDCLOUD_TERM_LIMIT = 120
+FREQUENCY_CACHE_TERM_LIMIT = 50
+WORDCLOUD_TFIDF_TERMS = TFIDF_WORDCLOUD_TERM_LIMIT
+CACHE_TABLE_KEYS = [
+    'records', 'tfidf', 'freq', 'evidence', 'tfidf_metrics', 'student_metrics', 'meta'
+]
 DOWNLOAD_FILE_LOCK = threading.Lock()
 
 DEFAULT_STOPWORDS = set('''학생 활동 수업 참여 통해 대한 관련 내용 주제 과정 보고서 탐구 발표 작성 자신 능력 모습 학습 이해 설명 자료 분석 의견 생각 학교 교사 진로 학과 계열 교육 흥미 적성 직업 특성 개요 주요 분야 졸업 진출 사항 기록'''.split())
@@ -175,7 +190,7 @@ def student_mask(df: pd.DataFrame, student: pd.Series) -> pd.Series:
     for column in STUDENT_ID_COLUMNS:
         if column in df.columns:
             expected = normalize_school_number(student.get(column, '')) if column != '성명' else clean(student.get(column, ''))
-            actual = df[column].fillna('').map(normalize_school_number if column != '성명' else clean)
+            actual = df[column].fillna('').astype(str).str.strip()
             mask &= actual == expected
     return mask
 
@@ -887,13 +902,14 @@ def render_analysis_terms_help():
 - **형태소 분석**: 문장을 의미 있는 단위로 나누는 과정입니다. 이 앱은 주로 명사와 영문 용어를 사용합니다.
 - **Kiwi**: 한국어 문장을 더 정교하게 나누는 형태소 분석기입니다. 최초 전처리는 느리지만 조사·어미가 붙은 표현을 비교적 안정적으로 정리합니다.
 - **간이 토큰화**: 글자 규칙과 간단한 어미 제거를 사용하는 빠른 방식입니다. 속도는 빠르지만 표현 잡음이 더 남을 수 있습니다.
-- **TF-IDF**: 모든 학생에게 흔한 단어보다 특정 학생 기록에서 상대적으로 두드러지는 단어에 더 큰 값을 주는 통계값입니다.
+- **TF-IDF**: 전체 학생 문서와 전체 어휘 공간에서 계산하며, 모든 학생에게 흔한 단어보다 특정 학생 기록에서 상대적으로 두드러지는 단어에 더 큰 값을 주는 통계값입니다. 앱 캐시는 탐색용 상위 120개를 저장합니다.
 - **코사인 유사도**: 두 문서의 단어 가중치 방향이 얼마나 비슷한지 나타냅니다. 확률이나 백분위가 아닙니다.
 - **키워드 교집합 비율**: 두 문서의 주요 단어 집합이 단순히 얼마나 겹치는지 보여줍니다. TF-IDF 유사도와 계산 방식이 다릅니다.
 - **말뭉치**: 비교 기준이 되는 학과 설명 텍스트 묶음입니다. 학업·교과·활동·적성·진로 관점으로 나누어 볼 수 있습니다.
 - **적합·높은 연계 표시**: 현재 불러온 학생 전체와 학과 전체의 텍스트 유사도 분포에서 각각 상위 1%와 상위 5%에 해당하는 결과입니다. 진로 적성이나 합격 가능성을 뜻하지 않습니다.
 - **보완 키워드**: 목표 학과 말뭉치에는 상대적으로 강하지만 학생부 기록에는 약한 표현입니다. 학생의 실제 결핍을 의미하지 않습니다.
-- **근거 원문**: 추출된 키워드가 학생부의 어느 문장에서 나타났는지 확인하는 기능입니다. 최종 해석은 반드시 원문을 함께 읽고 판단하세요.
+- **근거 원문 단위**: 앱의 분할 규칙으로 추출된 키워드 위치를 확인하는 단위입니다. 자연언어학적 문장 수와 같지 않을 수 있으며 최종 해석은 반드시 원문을 함께 읽고 판단하세요.
+- **학과 말뭉치 어휘 포착률**: 현재 학과 말뭉치의 어휘 공간에 포함되는 학생부 토큰 비율입니다. 학생 기록의 수준이나 부족함을 의미하지 않습니다.
 """)
 
 
@@ -918,6 +934,8 @@ def render_full_user_guide():
 ### 3. 형태소 분석기 선택
 
 형태소 분석기는 `학생부 전처리` 탭에서 Kiwi·MeCab·간이 토큰화 중 선택합니다. 현재 환경에 설치되지 않은 분석기는 실행할 수 없습니다. 이미 만든 학생부 캐시는 생성 당시 방식을 유지하므로 방식을 바꾸려면 원본 학생부를 다시 전처리해야 합니다. 학과 말뭉치 인덱스도 같은 방식으로 한 번 생성한 뒤 재사용합니다.
+
+새 캐시는 전체 학생 문서에서 TF-IDF를 한 번 계산하고 학생별 상위 120개 특징어, 전체 벡터 요약지표와 기록 구성 정보를 저장합니다. 화면의 TF-IDF 표시 개수나 워드클라우드 단어 수를 바꾸어도 캐시를 다시 만들지 않습니다. 구버전 캐시는 기존 특징어와 근거 원문을 볼 수 있지만 새 지표를 사용하려면 재전처리가 필요합니다.
 
 ### 4. 학과 분석 관점
 
@@ -944,6 +962,7 @@ def render_full_user_guide():
 
 - 학생부는 학생의 모든 경험을 담은 완전한 자료가 아니라 교사가 기록한 문서입니다.
 - 단어 빈도는 중요성이나 우수성을 직접 의미하지 않습니다.
+- 기록 문자 수, 토큰 수와 근거 원문 단위 수는 기록된 텍스트의 양과 구성을 보여 줄 뿐 학생의 역량이나 기록 품질을 뜻하지 않습니다.
 - 유사도는 문장 의미 전체가 아니라 사용된 단어의 통계적 가까움을 중심으로 계산합니다.
 - 학과 말뭉치의 내용과 갱신 시점에 따라 결과가 달라질 수 있습니다.
 - 학생에게 결과를 제시할 때는 점수보다 공통 키워드와 근거 문장을 중심으로 대화하세요.
@@ -1111,24 +1130,217 @@ def font_path():
     return None
 
 
+@dataclass
+class StudentTfidfResult:
+    vectorizer: Optional[TfidfVectorizer]
+    matrix: sparse.csr_matrix
+    feature_names: np.ndarray
+    token_documents: Tuple[str, ...]
+    top_terms: pd.DataFrame
+    full_metrics: pd.DataFrame
+
+
+TFIDF_FULL_METRIC_COLUMNS = [
+    'positive_tfidf_feature_count',
+    'tfidf_max_full',
+    'tfidf_top3_sum_full',
+    'tfidf_top5_sum_full',
+    'tfidf_top10_sum_full',
+    'tfidf_top30_sum_full',
+    'tfidf_total_positive_sum',
+    'tfidf_top3_share_full',
+    'tfidf_top5_share_full',
+    'tfidf_top10_share_full',
+    'tfidf_top30_share_full',
+    'tfidf_rank5_full',
+    'tfidf_top1_rank5_gap_full',
+    'tfidf_nonzero_mean',
+    'tfidf_nonzero_std',
+    'tfidf_normalized_entropy_full',
+]
+
+
+def fit_student_tfidf(df, col, stop, syn, min_len, use_kiwi) -> StudentTfidfResult:
+    """전체 학생 문서에서 TF-IDF를 한 번 적합하고 희소행렬을 유지합니다."""
+    documents = tuple(
+        tokenized(value, stop, syn, min_len, use_kiwi)
+        for value in df[col].fillna('').astype(str)
+    )
+    if not any(documents):
+        return StudentTfidfResult(
+            vectorizer=None,
+            matrix=sparse.csr_matrix((len(df), 0), dtype=float),
+            feature_names=np.asarray([], dtype=str),
+            token_documents=documents,
+            top_terms=pd.DataFrame(),
+            full_metrics=pd.DataFrame(),
+        )
+    vectorizer = TfidfVectorizer(
+        token_pattern=r'(?u)\b\w+\b',
+        norm='l2',
+        use_idf=True,
+        smooth_idf=True,
+        sublinear_tf=False,
+        min_df=1,
+        max_df=1.0,
+    )
+    matrix = vectorizer.fit_transform(documents).tocsr()
+    return StudentTfidfResult(
+        vectorizer=vectorizer,
+        matrix=matrix,
+        feature_names=vectorizer.get_feature_names_out(),
+        token_documents=documents,
+        top_terms=pd.DataFrame(),
+        full_metrics=pd.DataFrame(),
+    )
+
+
+def _rank_sparse_row(row: sparse.csr_matrix, feature_names: np.ndarray) -> list[int]:
+    return sorted(
+        range(len(row.data)),
+        key=lambda position: (
+            -float(row.data[position]),
+            str(feature_names[row.indices[position]]),
+        ),
+    )
+
+
+def extract_top_tfidf_terms(
+    result: StudentTfidfResult,
+    records: pd.DataFrame,
+    limit: int = TFIDF_CACHE_TERM_LIMIT,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    normalized = ensure_student_identity_columns(records).reset_index(drop=True)
+    for row_index in range(result.matrix.shape[0]):
+        sparse_row = result.matrix.getrow(row_index)
+        identity = {
+            column: normalized.iloc[row_index].get(column, '') for column in STUDENT_ID_COLUMNS
+        }
+        for rank, position in enumerate(
+            _rank_sparse_row(sparse_row, result.feature_names)[:limit], 1
+        ):
+            feature_index = sparse_row.indices[position]
+            rows.append({
+                **identity,
+                '순위': rank,
+                '단어': str(result.feature_names[feature_index]),
+                'TF-IDF': round(float(sparse_row.data[position]), 4),
+            })
+    return pd.DataFrame(
+        rows,
+        columns=[*STUDENT_ID_COLUMNS, '순위', '단어', 'TF-IDF'],
+    )
+
+
+def calculate_full_tfidf_metrics(
+    result: StudentTfidfResult,
+    records: pd.DataFrame,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    normalized = ensure_student_identity_columns(records).reset_index(drop=True)
+    for row_index in range(result.matrix.shape[0]):
+        sparse_row = result.matrix.getrow(row_index)
+        ranked_positions = _rank_sparse_row(sparse_row, result.feature_names)
+        values = np.asarray(
+            [float(sparse_row.data[position]) for position in ranked_positions], dtype=float
+        )
+        total = float(values.sum()) if values.size else 0.0
+        probabilities = values / total if total else np.asarray([], dtype=float)
+        normalized_entropy = (
+            float(-(probabilities * np.log(probabilities)).sum() / np.log(values.size))
+            if values.size > 1
+            else 0.0
+        )
+
+        def top_sum(count: int) -> float:
+            return float(values[:count].sum()) if values.size else 0.0
+
+        identity = {
+            column: normalized.iloc[row_index].get(column, '') for column in STUDENT_ID_COLUMNS
+        }
+        rows.append({
+            **identity,
+            'positive_tfidf_feature_count': int(values.size),
+            'tfidf_max_full': float(values[0]) if values.size else 0.0,
+            'tfidf_top3_sum_full': top_sum(3),
+            'tfidf_top5_sum_full': top_sum(5),
+            'tfidf_top10_sum_full': top_sum(10),
+            'tfidf_top30_sum_full': top_sum(30),
+            'tfidf_total_positive_sum': total,
+            'tfidf_top3_share_full': top_sum(3) / total if total else 0.0,
+            'tfidf_top5_share_full': top_sum(5) / total if total else 0.0,
+            'tfidf_top10_share_full': top_sum(10) / total if total else 0.0,
+            'tfidf_top30_share_full': top_sum(30) / total if total else 0.0,
+            'tfidf_rank5_full': float(values[4]) if values.size >= 5 else 0.0,
+            'tfidf_top1_rank5_gap_full': (
+                float(values[0] - values[4]) if values.size >= 5 else 0.0
+            ),
+            'tfidf_nonzero_mean': float(values.mean()) if values.size else 0.0,
+            'tfidf_nonzero_std': float(values.std(ddof=0)) if values.size else 0.0,
+            'tfidf_normalized_entropy_full': normalized_entropy,
+        })
+    return pd.DataFrame(rows, columns=[*STUDENT_ID_COLUMNS, *TFIDF_FULL_METRIC_COLUMNS])
+
+
+def prepare_student_tfidf(
+    df, col, stop, syn, min_len, use_kiwi, cache_term_limit=TFIDF_CACHE_TERM_LIMIT
+) -> StudentTfidfResult:
+    result = fit_student_tfidf(df, col, stop, syn, min_len, use_kiwi)
+    result.top_terms = extract_top_tfidf_terms(result, df, cache_term_limit)
+    result.full_metrics = calculate_full_tfidf_metrics(result, df)
+    return result
+
+
+def tfidf_table(df, col, stop, syn, min_len, use_kiwi, top_n=TFIDF_CACHE_TERM_LIMIT):
+    result = prepare_student_tfidf(df, col, stop, syn, min_len, use_kiwi, top_n)
+    return result.top_terms, result.vectorizer, result.matrix
+
+
+def wordcloud_weights(
+    tfidf_terms: pd.DataFrame,
+    frequency_terms: pd.DataFrame,
+    weighting: str,
+    term_count: int,
+) -> Dict[str, float]:
+    if weighting == '단어 빈도':
+        source = frequency_terms.head(min(term_count, FREQUENCY_CACHE_TERM_LIMIT))
+        if source.empty or not {'단어', '빈도'}.issubset(source.columns):
+            return {}
+        return dict(zip(source['단어'].astype(str), pd.to_numeric(source['빈도'], errors='coerce').fillna(0)))
+    source = tfidf_terms.head(min(term_count, TFIDF_WORDCLOUD_TERM_LIMIT))
+    if source.empty or not {'단어', 'TF-IDF'}.issubset(source.columns):
+        return {}
+    return dict(zip(source['단어'].astype(str), pd.to_numeric(source['TF-IDF'], errors='coerce').fillna(0)))
+
+
 @st.cache_data(show_spinner=False, max_entries=64)
-def wordcloud_fig(freq: Dict[str,float]):
-    if not freq: return None
-    wc=WordCloud(font_path=font_path(), width=1600, height=900, background_color='white', collocations=False, max_words=WORDCLOUD_TFIDF_TERMS, random_state=42, margin=6).generate_from_frequencies(freq)
-    fig,ax=plt.subplots(figsize=(10.5,5.7)); ax.imshow(wc, interpolation='bilinear'); ax.axis('off'); fig.tight_layout(pad=0); return fig
-
-
-def tfidf_table(df, col, stop, syn, min_len, use_kiwi, top_n=WORDCLOUD_TFIDF_TERMS):
-    docs=[tokenized(x, stop, syn, min_len, use_kiwi) for x in df[col].fillna('').astype(str)]
-    if not any(docs): return pd.DataFrame(), None, None
-    vec=TfidfVectorizer(token_pattern=r'(?u)\b\w+\b'); mat=vec.fit_transform(docs); terms=vec.get_feature_names_out(); rows=[]
-    for i,row in df.iterrows():
-        scores=mat[i].toarray().ravel()
-        for rank,idx in enumerate(scores.argsort()[::-1][:top_n],1):
-            if scores[idx] > 0:
-                identity = {column: row.get(column, '') for column in STUDENT_ID_COLUMNS}
-                rows.append({**identity, '순위':rank, '단어':terms[idx], 'TF-IDF':round(float(scores[idx]),4)})
-    return pd.DataFrame(rows), vec, mat
+def wordcloud_fig(
+    weights: Dict[str, float],
+    weighting: str = 'TF-IDF 특징어',
+    term_count: int = 60,
+    width: int = 1600,
+    height: int = 900,
+    font_file: str = '',
+):
+    selected_weights = dict(list(weights.items())[:term_count])
+    if not selected_weights:
+        return None
+    wc = WordCloud(
+        font_path=font_file or font_path(),
+        width=width,
+        height=height,
+        background_color='white',
+        collocations=False,
+        max_words=term_count,
+        random_state=42,
+        margin=6,
+    ).generate_from_frequencies(selected_weights)
+    fig, ax = plt.subplots(figsize=(10.5, 5.7))
+    ax.imshow(wc, interpolation='bilinear')
+    ax.axis('off')
+    fig.tight_layout(pad=0)
+    return fig
 
 
 def save_db(df, path=DB_PATH):
@@ -1294,6 +1506,136 @@ def df_bytes(df, kind):
     out=io.BytesIO(); df.to_excel(out,index=False); return out.getvalue(), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'major_corpus.xlsx'
 
 
+def safe_ratio(numerator: int | float, denominator: int | float) -> float:
+    return float(numerator) / float(denominator) if denominator else 0.0
+
+
+def file_sha256(path: Path) -> str:
+    if not path.is_file():
+        return ''
+    digest = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def installed_package_version(package: str) -> str:
+    try:
+        return package_version(package)
+    except PackageNotFoundError:
+        return '미확인'
+
+
+def calculate_department_vocab_metrics(
+    token_lists: list[list[str]],
+    major_df: Optional[pd.DataFrame],
+    stop: set[str],
+    syn: dict[str, str],
+    min_len: int,
+    analyzer: Any,
+    channel: str = '통합',
+) -> list[dict[str, Any]]:
+    missing = [{
+        'department_vocab_token_count': pd.NA,
+        'department_vocab_oov_token_count': pd.NA,
+        'department_vocab_token_coverage': pd.NA,
+        'department_vocab_unique_count': pd.NA,
+        'department_vocab_unique_oov_count': pd.NA,
+        'department_vocab_unique_coverage': pd.NA,
+        'department_student_vector_nonzero_count': pd.NA,
+        'department_student_vector_is_zero': '미산출',
+        'department_vocab_channel': channel,
+        'department_vocab_status': '미산출',
+    } for _ in token_lists]
+    if not isinstance(major_df, pd.DataFrame) or major_df.empty:
+        return missing
+    vectorizer, _matrix, _terms = prepare_major_index(
+        tuple(corpus_texts(major_df, channel)),
+        tuple(sorted(stop)),
+        tuple(sorted(syn.items())),
+        min_len,
+        analyzer,
+    )
+    if vectorizer is None:
+        return missing
+    vocabulary = set(vectorizer.vocabulary_)
+    rows: list[dict[str, Any]] = []
+    for tokens in token_lists:
+        covered = sum(token in vocabulary for token in tokens)
+        unique_tokens = set(tokens)
+        unique_covered = len(unique_tokens & vocabulary)
+        transformed = vectorizer.transform([' '.join(tokens)])
+        rows.append({
+            'department_vocab_token_count': int(covered),
+            'department_vocab_oov_token_count': int(len(tokens) - covered),
+            'department_vocab_token_coverage': safe_ratio(covered, len(tokens)),
+            'department_vocab_unique_count': int(unique_covered),
+            'department_vocab_unique_oov_count': int(len(unique_tokens) - unique_covered),
+            'department_vocab_unique_coverage': safe_ratio(unique_covered, len(unique_tokens)),
+            'department_student_vector_nonzero_count': int(transformed.getnnz()),
+            'department_student_vector_is_zero': bool(transformed.getnnz() == 0),
+            'department_vocab_channel': channel,
+            'department_vocab_status': '산출',
+        })
+    return rows
+
+
+def calculate_feature_evidence_metrics(
+    records: pd.DataFrame,
+    tfidf_terms: pd.DataFrame,
+    evidence: pd.DataFrame,
+    total_token_lists: list[list[str]],
+) -> pd.DataFrame:
+    evidence_lookup: dict[tuple[str, ...], dict[str, set[tuple[str, int]]]] = {}
+    section_lookup: dict[tuple[str, ...], dict[str, set[str]]] = {}
+    for _, row in evidence.iterrows():
+        identity = tuple(str(row.get(column, '')) for column in STUDENT_ID_COLUMNS)
+        evidence_unit = (str(row.get('출처', '')), int(row.get('문장번호', 0)))
+        for term in [item.strip() for item in str(row.get('키워드목록', '')).split(',') if item.strip()]:
+            evidence_lookup.setdefault(identity, {}).setdefault(term, set()).add(evidence_unit)
+            section_lookup.setdefault(identity, {}).setdefault(term, set()).add(evidence_unit[0])
+    rows: list[dict[str, Any]] = []
+    normalized = ensure_student_identity_columns(records).reset_index(drop=True)
+    for row_index, record in normalized.iterrows():
+        identity = tuple(str(record.get(column, '')) for column in STUDENT_ID_COLUMNS)
+        selected = tfidf_terms[
+            np.logical_and.reduce([
+                tfidf_terms[column].astype(str) == identity[index]
+                for index, column in enumerate(STUDENT_ID_COLUMNS)
+            ])
+        ].sort_values('순위', kind='stable')
+        terms = selected['단어'].astype(str).tolist()
+        top_feature = terms[0] if terms else ''
+        top_value = float(selected.iloc[0]['TF-IDF']) if not selected.empty else 0.0
+        term_units = evidence_lookup.get(identity, {})
+        term_sections = section_lookup.get(identity, {})
+
+        def combined_evidence_count(limit: int) -> int:
+            units: set[tuple[str, int]] = set()
+            for term in terms[:limit]:
+                units.update(term_units.get(term, set()))
+            return len(units)
+
+        def cross_section_count(limit: int) -> int:
+            return sum(len(term_sections.get(term, set())) >= 2 for term in terms[:limit])
+
+        rows.append({
+            **{column: str(record.get(column, '')) for column in STUDENT_ID_COLUMNS},
+            'top_feature_term': top_feature,
+            'top_feature_tfidf': top_value,
+            'top_feature_evidence_count': len(term_units.get(top_feature, set())),
+            'top_feature_section_count': len(term_sections.get(top_feature, set())),
+            'top_feature_occurrence_count': int(Counter(total_token_lists[row_index]).get(top_feature, 0)),
+            'top3_feature_evidence_count': combined_evidence_count(3),
+            'top5_feature_evidence_count': combined_evidence_count(5),
+            'cross_section_top30_count': cross_section_count(30),
+            'cross_section_top60_count': cross_section_count(60),
+            'cross_section_top120_count': cross_section_count(120),
+        })
+    return pd.DataFrame(rows)
+
+
 def build_student_cache(
     merged: pd.DataFrame,
     scope: str,
@@ -1303,13 +1645,18 @@ def build_student_cache(
     use_kiwi: bool,
     top_n: int = 50,
     progress_callback: Optional[Callable[[float, str], None]] = None,
+    major_df: Optional[pd.DataFrame] = None,
+    department_channel: str = '통합',
+    tfidf_result: Optional[StudentTfidfResult] = None,
 ) -> Dict[str, pd.DataFrame]:
     """학생부 원자료를 한 번만 전처리하여 분석용 표 묶음을 생성합니다.
 
     records: 학생별 병합 원문
-    tfidf: 학생별 TF-IDF 특징어
+    tfidf: 학생별 상위 TF-IDF 특징어(최대 120개)
     freq: 학생별 빈도 상위어
     evidence: 출처/문장 단위 근거 인덱스
+    tfidf_metrics: 전체 양의 TF-IDF 희소행 기반 지표
+    student_metrics: 기록 구성·근거 범위·학과 어휘 포착 지표
     meta: 저장 시 별도 JSON/테이블로 사용
     """
     if progress_callback:
@@ -1317,32 +1664,56 @@ def build_student_cache(
     records = ensure_student_identity_columns(merged).fillna('')
     if progress_callback:
         progress_callback(0.10, '전체 학생의 TF-IDF 특징어를 계산하는 중입니다.')
-    tfidf_term_limit = max(top_n, WORDCLOUD_TFIDF_TERMS)
-    tfidf_df, _, _ = tfidf_table(
-        records, scope, stop, syn, min_len, use_kiwi, top_n=tfidf_term_limit
-    )
+    if tfidf_result is None:
+        tfidf_result = prepare_student_tfidf(
+            records, scope, stop, syn, min_len, use_kiwi,
+            cache_term_limit=TFIDF_CACHE_TERM_LIMIT,
+        )
+    elif tfidf_result.matrix.shape[0] != len(records):
+        raise ValueError('제공된 TF-IDF 행렬의 학생 순서 또는 행 수가 병합 기록과 다릅니다.')
+    tfidf_df = tfidf_result.top_terms
+    tfidf_metrics_df = tfidf_result.full_metrics
     if progress_callback:
         progress_callback(0.35, '학생별 빈도와 근거 문장을 만드는 중입니다.')
 
     freq_rows = []
     evidence_rows = []
+    composition_rows = []
+    total_token_lists: list[list[str]] = []
     student_count = len(records)
     update_every = max(1, student_count // 100)
     for student_index, (_, row) in enumerate(records.iterrows(), start=1):
-        name = str(row.get('성명', ''))
-        no = str(row.get('번호', ''))
         identity = {column: str(row.get(column, '')) for column in STUDENT_ID_COLUMNS}
-        text = str(row.get(scope, ''))
-        toks = tokenize(text, stop, syn, min_len, use_kiwi)
-        for rank, (word, cnt) in enumerate(Counter(toks).most_common(top_n), 1):
+        section_cleaned: dict[str, str] = {}
+        section_before: dict[str, list[str]] = {}
+        section_after: dict[str, list[str]] = {}
+        section_evidence_counts: dict[str, int] = {}
+        for source in ['창체', '교과세특', '행발']:
+            cleaned = clean(str(row.get(source, '')))
+            section_cleaned[source] = cleaned
+            section_before[source] = tokenize(cleaned, set(), syn, min_len, use_kiwi)
+            section_after[source] = tokenize(cleaned, stop, syn, min_len, use_kiwi)
+        total_before = [token for source in ['창체', '교과세특', '행발'] for token in section_before[source]]
+        total_after = [token for source in ['창체', '교과세특', '행발'] for token in section_after[source]]
+        total_token_lists.append(total_after)
+        frequency_tokens = (
+            tfidf_result.token_documents[student_index - 1].split()
+            if student_index - 1 < len(tfidf_result.token_documents)
+            else total_after
+        )
+        for rank, (word, cnt) in enumerate(
+            Counter(frequency_tokens).most_common(FREQUENCY_CACHE_TERM_LIMIT), 1
+        ):
             freq_rows.append({**identity, '분석범위': scope, '순위': rank, '단어': word, '빈도': int(cnt)})
 
         for source in ['창체', '교과세특', '행발']:
             sentences = split_record_sentences(str(row.get(source, '')))
+            included_units = 0
             for i, sent in enumerate(sentences, 1):
                 sent_tokens = tokenize(sent, stop, syn, min_len, use_kiwi)
                 if not sent_tokens:
                     continue
+                included_units += 1
                 uniq = sorted(set(sent_tokens))
                 evidence_rows.append({
                     **identity,
@@ -1351,6 +1722,52 @@ def build_student_cache(
                     '원문': sent,
                     '키워드목록': ', '.join(uniq),
                 })
+            section_evidence_counts[source] = included_units
+        character_counts = {source: len(section_cleaned[source]) for source in section_cleaned}
+        token_counts = {source: len(section_after[source]) for source in section_after}
+        before_counts = {source: len(section_before[source]) for source in section_before}
+        unique_counts = {source: len(set(section_after[source])) for source in section_after}
+        total_characters = sum(character_counts.values())
+        total_tokens = sum(token_counts.values())
+        total_evidence = sum(section_evidence_counts.values())
+        available_sections = sum(bool(section_cleaned[source]) for source in section_cleaned)
+        composition_rows.append({
+            **identity,
+            '분석범위': scope,
+            'character_count_total': total_characters,
+            'character_count_creative': character_counts['창체'],
+            'character_count_subject': character_counts['교과세특'],
+            'character_count_behavior': character_counts['행발'],
+            'token_count_before_stopwords_total': len(total_before),
+            'token_count_before_stopwords_creative': before_counts['창체'],
+            'token_count_before_stopwords_subject': before_counts['교과세특'],
+            'token_count_before_stopwords_behavior': before_counts['행발'],
+            'token_count_total': total_tokens,
+            'token_count_creative': token_counts['창체'],
+            'token_count_subject': token_counts['교과세특'],
+            'token_count_behavior': token_counts['행발'],
+            'removed_token_count_total': len(total_before) - total_tokens,
+            'removed_token_ratio_total': safe_ratio(len(total_before) - total_tokens, len(total_before)),
+            'unique_token_count_total': len(set(total_after)),
+            'unique_token_count_creative': unique_counts['창체'],
+            'unique_token_count_subject': unique_counts['교과세특'],
+            'unique_token_count_behavior': unique_counts['행발'],
+            'evidence_unit_count_total': total_evidence,
+            'evidence_unit_count_creative': section_evidence_counts['창체'],
+            'evidence_unit_count_subject': section_evidence_counts['교과세특'],
+            'evidence_unit_count_behavior': section_evidence_counts['행발'],
+            'available_section_count': available_sections,
+            'empty_section_count': 3 - available_sections,
+            'creative_token_ratio': safe_ratio(token_counts['창체'], total_tokens),
+            'subject_token_ratio': safe_ratio(token_counts['교과세특'], total_tokens),
+            'behavior_token_ratio': safe_ratio(token_counts['행발'], total_tokens),
+            'creative_character_ratio': safe_ratio(character_counts['창체'], total_characters),
+            'subject_character_ratio': safe_ratio(character_counts['교과세특'], total_characters),
+            'behavior_character_ratio': safe_ratio(character_counts['행발'], total_characters),
+            'creative_evidence_ratio': safe_ratio(section_evidence_counts['창체'], total_evidence),
+            'subject_evidence_ratio': safe_ratio(section_evidence_counts['교과세특'], total_evidence),
+            'behavior_evidence_ratio': safe_ratio(section_evidence_counts['행발'], total_evidence),
+        })
         if progress_callback and (student_index % update_every == 0 or student_index == student_count):
             progress_callback(
                 0.35 + (0.60 * student_index / max(student_count, 1)),
@@ -1361,22 +1778,73 @@ def build_student_cache(
         progress_callback(0.97, '전처리 결과를 정리하는 중입니다.')
     freq_df = pd.DataFrame(freq_rows)
     evidence_df = pd.DataFrame(evidence_rows)
+    composition_df = pd.DataFrame(composition_rows)
+    feature_evidence_df = calculate_feature_evidence_metrics(
+        records, tfidf_df, evidence_df, total_token_lists
+    )
+    department_metrics = pd.DataFrame(calculate_department_vocab_metrics(
+        total_token_lists,
+        major_df,
+        stop,
+        syn,
+        min_len,
+        use_kiwi,
+        channel=department_channel,
+    ))
+    department_metrics = pd.concat(
+        [records[STUDENT_ID_COLUMNS].reset_index(drop=True), department_metrics], axis=1
+    )
+    student_metrics_df = (
+        composition_df
+        .merge(tfidf_metrics_df, on=STUDENT_ID_COLUMNS, how='left', validate='one_to_one')
+        .merge(feature_evidence_df, on=STUDENT_ID_COLUMNS, how='left', validate='one_to_one')
+        .merge(department_metrics, on=STUDENT_ID_COLUMNS, how='left', validate='one_to_one')
+    )
+    student_metrics_df['top_feature_tfidf'] = student_metrics_df['tfidf_max_full']
     meta_df = pd.DataFrame([{
+        '캐시스키마버전': STUDENT_CACHE_SCHEMA_VERSION,
+        '앱버전': APP_VERSION,
         '분석범위': scope,
         '학생수': len(records),
         '생성시각': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
         '최소단어길이': min_len,
         '형태소분석기': analyzer_name(use_kiwi),
-        'TF-IDF상위단어수': tfidf_term_limit,
+        '형태소분석기버전': installed_package_version('kiwipiepy') if analyzer_name(use_kiwi) == 'Kiwi' else '미확인',
+        'Python버전': platform.python_version(),
+        'scikit-learn버전': sklearn.__version__,
+        'pandas버전': pd.__version__,
+        '불용어개수': len(stop),
+        '불용어파일SHA256': file_sha256(STOPWORDS_PATH),
+        '표현통일규칙개수': len(syn),
+        '표현통일파일SHA256': file_sha256(SYNONYMS_PATH),
+        'TF-IDF특징공간차원': int(tfidf_result.matrix.shape[1]),
+        'TF-IDF캐시저장개수': TFIDF_CACHE_TERM_LIMIT,
+        'TF-IDF상위단어수': TFIDF_CACHE_TERM_LIMIT,
+        'TF-IDF기본표시개수': TFIDF_DEFAULT_DISPLAY_LIMIT,
+        'TF-IDF워드클라우드개수': TFIDF_WORDCLOUD_TERM_LIMIT,
+        '빈도캐시저장개수': FREQUENCY_CACHE_TERM_LIMIT,
+        '전체벡터지표포함여부': True,
+        '학과말뭉치포착관점': department_channel,
+        '학과말뭉치포착지표포함여부': bool(
+            (student_metrics_df['department_vocab_status'] == '산출').any()
+        ),
     }])
-    result = {'records': records, 'tfidf': tfidf_df, 'freq': freq_df, 'evidence': evidence_df, 'meta': meta_df}
+    result = {
+        'records': records,
+        'tfidf': tfidf_df,
+        'freq': freq_df,
+        'evidence': evidence_df,
+        'tfidf_metrics': tfidf_metrics_df,
+        'student_metrics': student_metrics_df,
+        'meta': meta_df,
+    }
     if progress_callback:
         progress_callback(1.0, '전처리가 완료되었습니다.')
     return result
 
 
 def normalize_student_cache_identity(cache: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
-    for key in ['records', 'tfidf', 'freq', 'evidence']:
+    for key in ['records', 'tfidf', 'freq', 'evidence', 'tfidf_metrics', 'student_metrics']:
         if key in cache and isinstance(cache[key], pd.DataFrame):
             cache[key] = ensure_student_identity_columns(cache[key])
     return cache
@@ -1394,7 +1862,15 @@ def cache_to_zip(cache: Dict[str, pd.DataFrame]) -> bytes:
 def cache_to_excel(cache: Dict[str, pd.DataFrame]) -> bytes:
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as writer:
-        sheet_names = {'records':'학생부병합', 'tfidf':'학생별TFIDF', 'freq':'학생별빈도', 'evidence':'근거문장인덱스', 'meta':'분석정보'}
+        sheet_names = {
+            'records':'학생부병합',
+            'tfidf':'학생별TFIDF',
+            'freq':'학생별빈도',
+            'evidence':'근거원문인덱스',
+            'tfidf_metrics':'전체TFIDF지표',
+            'student_metrics':'학생별분석지표',
+            'meta':'분석정보',
+        }
         for key, df in cache.items():
             if isinstance(df, pd.DataFrame):
                 df.to_excel(writer, sheet_name=sheet_names.get(key, key)[:31], index=False)
@@ -1427,19 +1903,28 @@ def load_student_cache(uploaded) -> Optional[Dict[str, pd.DataFrame]]:
         if name.endswith('.zip'):
             result = {}
             with zipfile.ZipFile(io.BytesIO(uploaded.getvalue())) as zf:
-                for key in ['records', 'tfidf', 'freq', 'evidence', 'meta']:
+                for key in CACHE_TABLE_KEYS:
                     fn = f'{key}.csv'
                     if fn in zf.namelist():
                         result[key] = pd.read_csv(zf.open(fn), dtype=str).fillna('')
             return normalize_student_cache_identity(result) if result else None
         if name.endswith(('.xlsx', '.xls')):
-            xls = pd.ExcelFile(uploaded)
-            mapping = {'학생부병합':'records', '학생별TFIDF':'tfidf', '학생별빈도':'freq', '근거문장인덱스':'evidence', '분석정보':'meta'}
+            mapping = {
+                '학생부병합':'records',
+                '학생별TFIDF':'tfidf',
+                '학생별빈도':'freq',
+                '근거문장인덱스':'evidence',
+                '근거원문인덱스':'evidence',
+                '전체TFIDF지표':'tfidf_metrics',
+                '학생별분석지표':'student_metrics',
+                '분석정보':'meta',
+            }
             result = {}
-            for sh in xls.sheet_names:
-                key = mapping.get(sh, sh)
-                if key in {'records','tfidf','freq','evidence','meta'}:
-                    result[key] = pd.read_excel(uploaded, sheet_name=sh, dtype=str).fillna('')
+            with pd.ExcelFile(uploaded) as xls:
+                for sh in xls.sheet_names:
+                    key = mapping.get(sh, sh)
+                    if key in set(CACHE_TABLE_KEYS):
+                        result[key] = pd.read_excel(xls, sheet_name=sh, dtype=str).fillna('')
             return normalize_student_cache_identity(result) if result else None
         if name.endswith(('.db', '.sqlite', '.sqlite3')):
             tmp = DATA_DIR / '_uploaded_student_cache.db'
@@ -1447,7 +1932,7 @@ def load_student_cache(uploaded) -> Optional[Dict[str, pd.DataFrame]]:
             tmp.write_bytes(uploaded.getvalue())
             result = {}
             with sqlite3.connect(tmp) as conn:
-                for key in ['records', 'tfidf', 'freq', 'evidence', 'meta']:
+                for key in CACHE_TABLE_KEYS:
                     try:
                         result[key] = pd.read_sql(f'select * from {key}', conn).fillna('')
                     except Exception:
@@ -1464,7 +1949,7 @@ def save_student_cache_db(cache: Dict[str, pd.DataFrame], path: Path = STUDENT_C
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
-        for key in ['records', 'tfidf', 'freq', 'evidence', 'meta']:
+        for key in CACHE_TABLE_KEYS:
             df = cache.get(key)
             if isinstance(df, pd.DataFrame):
                 df.fillna('').to_sql(key, conn, if_exists='replace', index=False)
@@ -1475,12 +1960,118 @@ def load_student_cache_db(path: Path = STUDENT_CACHE_PATH) -> Optional[Dict[str,
         return None
     result: Dict[str, pd.DataFrame] = {}
     with sqlite3.connect(path) as conn:
-        for key in ['records', 'tfidf', 'freq', 'evidence', 'meta']:
+        for key in CACHE_TABLE_KEYS:
             try:
                 result[key] = pd.read_sql(f'select * from {key}', conn).fillna('')
             except Exception:
                 pass
     return normalize_student_cache_identity(result) if result else None
+
+
+def student_cache_compatibility(cache: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+    tfidf = cache.get('tfidf', pd.DataFrame()) if isinstance(cache, dict) else pd.DataFrame()
+    meta = cache.get('meta', pd.DataFrame()) if isinstance(cache, dict) else pd.DataFrame()
+    schema_version = 0
+    stored_limit = 0
+    full_metrics_flag = False
+    if isinstance(meta, pd.DataFrame) and not meta.empty:
+        schema_value = pd.to_numeric(meta.iloc[0].get('캐시스키마버전', 0), errors='coerce')
+        schema_version = int(schema_value) if pd.notna(schema_value) else 0
+        stored_value = pd.to_numeric(
+            meta.iloc[0].get('TF-IDF캐시저장개수', meta.iloc[0].get('TF-IDF상위단어수', 0)),
+            errors='coerce',
+        )
+        stored_limit = int(stored_value) if pd.notna(stored_value) else 0
+        full_metrics_flag = str(meta.iloc[0].get('전체벡터지표포함여부', '')).strip().lower() in {
+            'true', '1', 'yes', '예'
+        }
+    max_rows = 0
+    if isinstance(tfidf, pd.DataFrame) and not tfidf.empty:
+        identity_columns = [column for column in STUDENT_ID_COLUMNS if column in tfidf.columns]
+        if identity_columns:
+            max_rows = int(tfidf.groupby(identity_columns, dropna=False).size().max())
+    effective_limit = stored_limit or max_rows
+    has_full_metrics = (
+        isinstance(cache.get('tfidf_metrics'), pd.DataFrame)
+        and not cache.get('tfidf_metrics', pd.DataFrame()).empty
+        and full_metrics_flag
+    )
+    has_student_metrics = (
+        isinstance(cache.get('student_metrics'), pd.DataFrame)
+        and not cache.get('student_metrics', pd.DataFrame()).empty
+    )
+    if effective_limit and effective_limit < TFIDF_CACHE_TERM_LIMIT:
+        status = '상위 특징어 제한 구버전 캐시'
+    elif not has_full_metrics:
+        status = '전체 지표 미포함 캐시' if schema_version else '메타데이터 미확인 캐시'
+    elif schema_version < STUDENT_CACHE_SCHEMA_VERSION or not has_student_metrics:
+        status = '전체 지표 미포함 캐시'
+    else:
+        status = '정상 최신 캐시'
+    warning = ''
+    if status != '정상 최신 캐시':
+        count_text = f'최대 {effective_limit}개' if effective_limit else '저장 범위 미확인'
+        warning = (
+            f'이 캐시는 학생별 TF-IDF 특징어가 {count_text}인 이전 형식입니다. '
+            '기존 특징어와 근거 원문은 사용할 수 있으나, 확장된 TF-IDF 워드클라우드와 '
+            '전체 벡터 기반 연구지표를 사용하려면 원본 학생부를 다시 전처리해야 합니다.'
+        )
+    return {
+        'status': status,
+        'schema_version': schema_version,
+        'stored_tfidf_limit': effective_limit,
+        'has_full_tfidf_metrics': has_full_metrics,
+        'has_student_metrics': has_student_metrics,
+        'warning': warning,
+    }
+
+
+def student_cache_rows(
+    cache: Dict[str, pd.DataFrame], key: str, student: pd.Series
+) -> pd.DataFrame:
+    frame = cache.get(key, pd.DataFrame()) if isinstance(cache, dict) else pd.DataFrame()
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return pd.DataFrame()
+    return frame.loc[student_mask(frame, student)].copy()
+
+
+def student_analysis_export_excel(
+    cache: Dict[str, pd.DataFrame],
+    student: pd.Series,
+    department_similarity: Optional[pd.DataFrame] = None,
+) -> bytes:
+    output = io.BytesIO()
+    student_tfidf = student_cache_rows(cache, 'tfidf', student)
+    student_evidence = student_cache_rows(cache, 'evidence', student)
+    evidence_summary_rows = []
+    for _, feature in student_tfidf.iterrows():
+        term = str(feature.get('단어', ''))
+        if student_evidence.empty or '키워드목록' not in student_evidence.columns:
+            count = 0
+        else:
+            count = int(student_evidence['키워드목록'].astype(str).map(
+                lambda keywords: term in {
+                    item.strip() for item in keywords.split(',') if item.strip()
+                }
+            ).sum())
+        evidence_summary_rows.append({
+            '순위': feature.get('순위', ''),
+            '단어': term,
+            'TF-IDF': feature.get('TF-IDF', ''),
+            '근거원문단위수': count,
+        })
+    sheets = {
+        '기록구성정보': student_cache_rows(cache, 'student_metrics', student),
+        'TFIDF특징어': student_tfidf,
+        '빈도상위어': student_cache_rows(cache, 'freq', student),
+        '특징어별근거수': pd.DataFrame(evidence_summary_rows),
+        '특징어근거원문': student_evidence,
+        '학과유사도': department_similarity if isinstance(department_similarity, pd.DataFrame) else pd.DataFrame(),
+    }
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for sheet_name, frame in sheets.items():
+            frame.to_excel(writer, sheet_name=sheet_name, index=False)
+    return output.getvalue()
 
 
 def parse_uploaded_records(
@@ -1661,7 +2252,14 @@ def main():
     st.sidebar.header('2. 분석 설정')
     scope = st.sidebar.radio('분석 범위', ['통합', '창체', '교과세특', '행발'])
     min_len = st.sidebar.slider('최소 단어 길이', 1, 4, 2)
-    top_n = st.sidebar.slider('상위 단어 수', 10, 100, 50, step=5)
+    top_n = st.sidebar.slider(
+        'TF-IDF 상세표 표시 수',
+        10,
+        100,
+        TFIDF_DEFAULT_DISPLAY_LIMIT,
+        step=10,
+        help='화면 표시만 바뀌며 캐시의 상위 120개 특징어는 다시 계산하거나 삭제하지 않습니다.',
+    )
     extra = st.sidebar.text_area('추가 불용어')
     stop = read_stopwords(extra)
     syn = read_synonyms()
@@ -1684,6 +2282,9 @@ def main():
             st.info('왼쪽 사이드바에서 전처리된 학생부 파일을 불러오세요. 파일이 없다면 2번 「학생부 전처리」 탭에서 원본 학생부 파일을 넣고 먼저 전처리하면 됩니다.')
             render_footer()
         else:
+            compatibility = student_cache_compatibility(cache)
+            if compatibility['warning']:
+                st.warning(compatibility['warning'])
             cached_analyzer = student_cache_analyzer(cache)
             effective_analyzer = cached_analyzer or requested_analyzer
             if cached_analyzer is not None and cached_analyzer != analyzer_name(requested_analyzer):
@@ -1696,6 +2297,9 @@ def main():
             tfidf_df = ensure_student_identity_columns(cache.get('tfidf', pd.DataFrame())).fillna('')
             freq_df = ensure_student_identity_columns(cache.get('freq', pd.DataFrame())).fillna('')
             evidence_df = cache.get('evidence', pd.DataFrame())
+            student_metrics_df = ensure_student_identity_columns(
+                cache.get('student_metrics', pd.DataFrame())
+            ).fillna('') if isinstance(cache.get('student_metrics'), pd.DataFrame) else pd.DataFrame()
 
             render_status_card(
                 len(records),
@@ -1844,16 +2448,109 @@ def main():
                         selected['TF-IDF'] = pd.to_numeric(selected['TF-IDF'], errors='coerce').fillna(0)
                     if '빈도' in freq.columns:
                         freq['빈도'] = pd.to_numeric(freq['빈도'], errors='coerce').fillna(0).astype(int)
-                    wc_dict = dict(zip(selected['단어'], selected['TF-IDF'])) if not selected.empty else dict(zip(freq['단어'], freq['빈도'])) if not freq.empty else {}
-                    fig = wordcloud_fig(wc_dict)
+                    weighting = st.radio(
+                        '워드클라우드 가중치',
+                        ['TF-IDF 특징어', '단어 빈도'],
+                        horizontal=True,
+                        key='analysis_wordcloud_weighting',
+                    )
+                    word_limit = (
+                        TFIDF_WORDCLOUD_TERM_LIMIT
+                        if weighting == 'TF-IDF 특징어'
+                        else FREQUENCY_CACHE_TERM_LIMIT
+                    )
+                    word_count = st.slider(
+                        '워드클라우드 단어 수',
+                        10,
+                        word_limit,
+                        min(60, word_limit),
+                        step=10,
+                        key=f'analysis_wordcloud_term_count::{weighting}',
+                    )
+                    wc_dict = wordcloud_weights(selected, freq, weighting, word_count)
+                    title = (
+                        'TF-IDF 특징어 워드클라우드'
+                        if weighting == 'TF-IDF 특징어'
+                        else '단어 빈도 워드클라우드'
+                    )
+                    st.markdown(f'**{title}**')
+                    fig = wordcloud_fig(
+                        wc_dict,
+                        weighting=weighting,
+                        term_count=word_count,
+                        font_file=font_path() or '',
+                    )
                     if fig:
                         st.pyplot(fig, clear_figure=True, use_container_width=True)
-                        st.caption('글자가 클수록 이 학생의 기록에서 상대적으로 두드러지는 TF-IDF 특징어입니다.')
+                        if weighting == 'TF-IDF 특징어':
+                            st.caption('글자 크기는 이 학생의 기록에서 상대적으로 두드러지는 TF-IDF 가중치에 비례합니다.')
+                        else:
+                            st.caption('글자 크기는 전처리된 학생부 기록에서의 출현 빈도에 비례합니다.')
                     else:
                         st.info('워드클라우드를 만들 키워드가 없습니다.')
                     card_close()
 
             if analysis_ready:
+                st.subheader('기록 구성 정보')
+                metric_rows = (
+                    student_metrics_df[student_mask(student_metrics_df, row)]
+                    if not student_metrics_df.empty
+                    else pd.DataFrame()
+                )
+                if metric_rows.empty:
+                    st.info(
+                        '이 캐시에는 기록 구성 지표가 없어 `미산출`로 표시합니다. '
+                        '새 지표를 사용하려면 원본 학생부를 다시 전처리해 주세요.'
+                    )
+                else:
+                    metric_row = metric_rows.iloc[0]
+                    summary_columns = st.columns(4)
+                    summary_columns[0].metric('전체 문자 수', f"{int(float(metric_row.get('character_count_total', 0) or 0)):,}")
+                    summary_columns[1].metric('분석 토큰 수', f"{int(float(metric_row.get('token_count_total', 0) or 0)):,}")
+                    summary_columns[2].metric('근거 원문 단위 수', f"{int(float(metric_row.get('evidence_unit_count_total', 0) or 0)):,}")
+                    summary_columns[3].metric('양의 TF-IDF 특징어 수', f"{int(float(metric_row.get('positive_tfidf_feature_count', 0) or 0)):,}")
+                    st.caption('기록량과 토큰 수는 학생부에 기재된 텍스트의 양을 나타내며, 학생의 역량이나 기록의 질을 의미하지 않습니다.')
+                    with st.expander('기록 구성 상세', expanded=False):
+                        detail = pd.DataFrame([
+                            {
+                                '영역': '창체',
+                                '문자 수': metric_row.get('character_count_creative', 0),
+                                '분석 토큰 수': metric_row.get('token_count_creative', 0),
+                                '근거 원문 단위 수': metric_row.get('evidence_unit_count_creative', 0),
+                                '고유 토큰 수': metric_row.get('unique_token_count_creative', 0),
+                            },
+                            {
+                                '영역': '교과세특',
+                                '문자 수': metric_row.get('character_count_subject', 0),
+                                '분석 토큰 수': metric_row.get('token_count_subject', 0),
+                                '근거 원문 단위 수': metric_row.get('evidence_unit_count_subject', 0),
+                                '고유 토큰 수': metric_row.get('unique_token_count_subject', 0),
+                            },
+                            {
+                                '영역': '행발',
+                                '문자 수': metric_row.get('character_count_behavior', 0),
+                                '분석 토큰 수': metric_row.get('token_count_behavior', 0),
+                                '근거 원문 단위 수': metric_row.get('evidence_unit_count_behavior', 0),
+                                '고유 토큰 수': metric_row.get('unique_token_count_behavior', 0),
+                            },
+                        ])
+                        st.dataframe(detail, use_container_width=True, hide_index=True)
+                        removed_count = int(float(metric_row.get('removed_token_count_total', 0) or 0))
+                        removed_ratio = float(metric_row.get('removed_token_ratio_total', 0) or 0)
+                        coverage = pd.to_numeric(
+                            metric_row.get('department_vocab_token_coverage', ''), errors='coerce'
+                        )
+                        coverage_text = (
+                            f'{float(coverage) * 100:.1f}%'
+                            if pd.notna(coverage)
+                            else '미산출'
+                        )
+                        st.write(
+                            f"불용어 제거 토큰: **{removed_count:,}개** ({removed_ratio * 100:.1f}%) · "
+                            f"전체 고유 토큰: **{int(float(metric_row.get('unique_token_count_total', 0) or 0)):,}개** · "
+                            f"학과 말뭉치 어휘 포착률(통합): **{coverage_text}**"
+                        )
+
                 with st.expander('키워드 상세표', expanded=False):
                     tfidf_tab, freq_tab = st.tabs(['TF-IDF 특징어', '단어 빈도'])
                     with tfidf_tab:
@@ -1891,7 +2588,11 @@ def main():
                                 )
                     with freq_tab:
                         freq_columns = [column for column in ['순위', '단어', '빈도'] if column in freq.columns]
-                        st.dataframe(freq[freq_columns].head(top_n), use_container_width=True, hide_index=True)
+                        st.dataframe(
+                            freq[freq_columns].head(FREQUENCY_CACHE_TERM_LIMIT),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
 
                 with st.expander('키워드 근거 원문 추적', expanded=False):
                     keyword_candidates = []
@@ -1907,7 +2608,7 @@ def main():
                         with c1:
                             selected_keyword = st.selectbox('근거를 확인할 키워드', keyword_candidates)
                             if not evidence_df.empty and '키워드목록' in evidence_df.columns:
-                                pattern = rf'(^|,\s*){re.escape(selected_keyword)}($|,\s*)'
+                                pattern = rf'(?:^|,\s*){re.escape(selected_keyword)}(?:$|,\s*)'
                                 evd = evidence_df[student_mask(evidence_df, row) & evidence_df['키워드목록'].astype(str).str.contains(pattern, regex=True, na=False)].copy()
                                 if not evd.empty:
                                     evd['등장횟수'] = evd['키워드목록'].astype(str).apply(lambda x: x.split(', ').count(selected_keyword))
@@ -1925,6 +2626,7 @@ def main():
 
             # 학과 말뭉치: 사이드바 업로드 → 세션 → 내장 DB 순서로 사용합니다.
             major_df = pd.DataFrame()
+            sim_raw = pd.DataFrame()
             if analysis_ready and isinstance(st.session_state.get('major_corpus_df'), pd.DataFrame):
                 major_df = st.session_state['major_corpus_df']
             if analysis_ready and major_df.empty:
@@ -2008,7 +2710,12 @@ def main():
                             )
                         with wc_gap_col:
                             st.markdown('**보완 키워드 워드클라우드**')
-                            fig2 = wordcloud_fig(gap_freq)
+                            fig2 = wordcloud_fig(
+                                gap_freq,
+                                weighting='보완 키워드',
+                                term_count=min(top_n, len(gap_freq)),
+                                font_file=font_path() or '',
+                            )
                             if fig2:
                                 st.pyplot(fig2, clear_figure=True)
                             else:
@@ -2022,6 +2729,18 @@ def main():
                         st.warning('조건에 맞는 학과가 없습니다.')
             elif analysis_ready:
                 st.info('왼쪽 사이드바에서 학과 말뭉치 DB/CSV/XLSX를 넣거나, 3번 말뭉치 관리 탭에서 내장 DB를 저장하면 학과 유사도 분석이 가능합니다.')
+            if analysis_ready:
+                with st.expander('선택 학생 분석 자료 내보내기', expanded=False):
+                    st.warning('이 파일에는 학생 식별정보와 학생부 원문이 포함될 수 있습니다. 개인정보 자료와 같은 수준으로 보호하세요.')
+                    st.download_button(
+                        '선택 학생 분석 자료 Excel 다운로드',
+                        data=lambda current_cache=cache, current_row=row, current_similarity=sim_raw: student_analysis_export_excel(
+                            current_cache, current_row, current_similarity
+                        ),
+                        file_name='selected_student_analysis_PRIVATE.xlsx',
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        on_click='ignore',
+                    )
             render_footer()
 
     # ------------------------------------------------------------------
@@ -2152,6 +2871,12 @@ def main():
                             selected_analyzer,
                             top_n,
                             progress_callback=update_preprocess_progress,
+                            major_df=(
+                                st.session_state.get('major_corpus_df')
+                                if isinstance(st.session_state.get('major_corpus_df'), pd.DataFrame)
+                                else load_db()
+                            ),
+                            department_channel='통합',
                         )
                         st.session_state['student_cache'] = cache
                         st.session_state['student_cache_name'] = '현재 세션에서 생성한 캐시'
@@ -2169,7 +2894,7 @@ def main():
                     m1, m2, m3 = st.columns(3)
                     m1.metric('캐시 학생 수', len(cache.get('records', pd.DataFrame())))
                     m2.metric('TF-IDF 행 수', len(cache.get('tfidf', pd.DataFrame())))
-                    m3.metric('근거문장 행 수', len(cache.get('evidence', pd.DataFrame())))
+                    m3.metric('근거 원문 단위 행 수', len(cache.get('evidence', pd.DataFrame())))
                     if fmt == 'CSV 묶음(zip)':
                         st.download_button(
                             '전처리 결과 ZIP 다운로드',

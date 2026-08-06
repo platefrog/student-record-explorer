@@ -4,6 +4,7 @@ openpyxl
 matplotlib
 wordcloud
 scikit-learn
+scipy
 kiwipiepy
 kiwipiepy-model
 requests
