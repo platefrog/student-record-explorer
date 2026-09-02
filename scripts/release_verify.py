@@ -7,9 +7,11 @@ import hashlib
 import json
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import zipfile
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -74,6 +76,25 @@ def check_source() -> None:
     app_text = (ROOT / 'app.py').read_text(encoding='utf-8')
     if '<div class="sre-footer">' in app_text:
         errors.append('app.py: footer must not depend on raw HTML')
+
+    corpus_path = ROOT / 'data' / 'major_corpus.db'
+    try:
+        with closing(sqlite3.connect(corpus_path)) as connection:
+            integrity = connection.execute('PRAGMA integrity_check').fetchone()[0]
+            rows, unique_rows, schema_rows = connection.execute(
+                'SELECT COUNT(*), COUNT(DISTINCT majorSeq), '
+                'SUM(CASE WHEN 스키마버전 = ? THEN 1 ELSE 0 END) FROM majors',
+                ('3',),
+            ).fetchone()
+        if integrity != 'ok':
+            errors.append(f'data/major_corpus.db: integrity check failed: {integrity}')
+        if (rows, unique_rows, schema_rows) != (501, 501, 501):
+            errors.append(
+                'data/major_corpus.db: expected 501 unique schema-v3 rows, '
+                f'got rows={rows}, unique={unique_rows}, schema_v3={schema_rows}'
+            )
+    except Exception as exc:
+        errors.append(f'data/major_corpus.db: validation failed: {type(exc).__name__}: {exc}')
 
     if errors:
         raise RuntimeError('Release source verification failed:\n- ' + '\n- '.join(errors))
@@ -143,7 +164,7 @@ def finalize() -> None:
             for name in archive.namelist()
             if name.startswith(f'StudentRecordExplorer-{current}/_internal/data/') and not name.endswith('/')
         }
-        if bundled_data != {'stopwords.txt', 'synonyms.txt'}:
+        if bundled_data != {'stopwords.txt', 'synonyms.txt', 'major_corpus.db'}:
             raise RuntimeError(f'Unexpected bundled application data: {sorted(bundled_data)}')
 
     assets = [portable]

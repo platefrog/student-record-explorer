@@ -1,6 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 import io, re, html, os, sqlite3, platform, time, json, zipfile, shutil, threading, hashlib, sys
+from contextlib import closing
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
@@ -307,7 +308,54 @@ def dictionary_stopword_candidates(
 
 
 def apply_syn(t: str, syn: dict[str,str]) -> str:
-    return syn.get(t, syn.get(t.upper(), syn.get(t.lower(), t)))
+    if t in syn:
+        return syn[t]
+    folded = t.casefold()
+    for source, target in syn.items():
+        if str(source).casefold() == folded:
+            return target
+    return t
+
+
+def _synonym_pattern(alias: str) -> str:
+    escaped = re.escape(alias).replace(r'\ ', r'\s+')
+    if re.fullmatch(r'[A-Za-z0-9_]+', alias):
+        return rf'(?<![A-Za-z0-9]){escaped}(?![A-Za-z0-9])'
+    if re.fullmatch(r'[가-힣]+', alias):
+        return rf'(?<![가-힣]){escaped}(?![가-힣])'
+    return rf'(?<![A-Za-z0-9가-힣]){escaped}(?![A-Za-z0-9가-힣])'
+
+
+def protect_synonym_aliases(text: str, syn: dict[str, str]) -> tuple[str, dict[str, str]]:
+    """형태소 분석 전에 별칭을 보호하여 목표 표현을 하나의 토큰으로 만듭니다."""
+    protected = text
+    markers: dict[str, str] = {}
+    aliases = sorted(
+        ((clean(source), clean(target)) for source, target in syn.items()),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    for index, (alias, target) in enumerate(aliases):
+        if not alias or not target:
+            continue
+        marker_index = index
+        marker_suffix = ''
+        while True:
+            marker_suffix = chr(ord('a') + marker_index % 26) + marker_suffix
+            marker_index = marker_index // 26 - 1
+            if marker_index < 0:
+                break
+        marker = f'sreprotected{marker_suffix}x'
+        replaced = re.sub(
+            _synonym_pattern(alias),
+            f' {marker} ',
+            protected,
+            flags=re.IGNORECASE,
+        )
+        if replaced != protected:
+            protected = replaced
+            markers[marker] = re.sub(r'\s+', '', target)
+    return protected, markers
 
 
 def normalize_token_surface(t: str) -> str:
@@ -319,6 +367,11 @@ def normalize_token_surface(t: str) -> str:
             if t.endswith(suf) and len(t)-len(suf)>=2:
                 t=t[:-len(suf)]; changed=True; break
     return t
+
+
+def token_length_allowed(token: str, min_len: int, tag: str = '') -> bool:
+    '''분석기와 품사에 관계없이 사용자가 정한 최소 길이를 적용합니다.'''
+    return len(token) >= min_len
 
 @st.cache_resource(show_spinner=False)
 def get_kiwi():
@@ -376,17 +429,20 @@ def analyzer_unavailable_reason(setting: Any) -> str:
 
 
 def tokenize(text: str, stop: set[str], syn: dict[str,str], min_len=2, analyzer='Kiwi') -> List[str]:
-    text=clean(text); out=[]
+    text=clean(text)
+    protected_text, markers = protect_synonym_aliases(text, syn)
+    out=[]
     mode = analyzer_name(analyzer)
     if mode == 'Kiwi':
         kiwi = get_kiwi()
         if kiwi is None:
             raise RuntimeError('Kiwi 형태소 분석기를 사용할 수 없습니다.')
         try:
-            for tok in kiwi.tokenize(text):
+            for tok in kiwi.tokenize(protected_text):
                 if tok.tag.startswith('N') or tok.tag in {'SL','SH'}:
-                    f=apply_syn(tok.form.strip(), syn)
-                    if len(f)>=min_len and f not in stop: out.append(f)
+                    surface = tok.form.strip()
+                    f=markers.get(surface.lower(), apply_syn(surface, syn))
+                    if token_length_allowed(f, min_len, tok.tag) and f not in stop: out.append(f)
             return out
         except Exception:
             pass
@@ -396,7 +452,7 @@ def tokenize(text: str, stop: set[str], syn: dict[str,str], min_len=2, analyzer=
             raise RuntimeError('MeCab 형태소 분석기가 설치되어 있지 않습니다.')
         try:
             if MECAB_BACKEND == 'mecab_ko':
-                parsed = mecab.parse(text) or ''
+                parsed = mecab.parse(protected_text) or ''
                 pairs = []
                 for line in parsed.splitlines():
                     if line == 'EOS' or '\t' not in line:
@@ -404,18 +460,19 @@ def tokenize(text: str, stop: set[str], syn: dict[str,str], min_len=2, analyzer=
                     surface, features = line.split('\t', 1)
                     pairs.append((surface, features.split(',', 1)[0]))
             else:
-                pairs = mecab.pos(text)
+                pairs = mecab.pos(protected_text)
             for surface, tag in pairs:
                 if str(tag).startswith('N') or tag in {'SL', 'SH'}:
-                    f = apply_syn(str(surface).strip(), syn)
-                    if len(f) >= min_len and f not in stop:
+                    surface_text = str(surface).strip()
+                    f = markers.get(surface_text.lower(), apply_syn(surface_text, syn))
+                    if token_length_allowed(f, min_len, str(tag)) and f not in stop:
                         out.append(f)
             return out
         except Exception as exc:
             raise RuntimeError(f'MeCab 형태소 분석 중 오류가 발생했습니다: {exc}') from exc
-    for t in re.findall(r'[가-힣A-Za-z]{%d,}' % min_len, text):
-        t=apply_syn(normalize_token_surface(t), syn)
-        if len(t)>=min_len and t not in stop: out.append(t)
+    for t in re.findall(r'[가-힣A-Za-z]+', protected_text):
+        t=markers.get(t.lower(), apply_syn(normalize_token_surface(t), syn))
+        if token_length_allowed(t, min_len) and t not in stop: out.append(t)
     return out
 
 
@@ -1346,15 +1403,32 @@ def wordcloud_fig(
 def save_db(df, path=DB_PATH):
     DATA_DIR.mkdir(exist_ok=True)
     df = enrich_existing_corpus(df)
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         df.fillna('').to_sql('majors', conn, if_exists='replace', index=False)
+        conn.commit()
 
 
 def load_db(path=DB_PATH):
     if not Path(path).exists(): return pd.DataFrame()
     try:
-        with sqlite3.connect(path) as conn: return pd.read_sql('select * from majors', conn).fillna('')
+        with closing(sqlite3.connect(path)) as conn: return pd.read_sql('select * from majors', conn).fillna('')
     except Exception: return pd.DataFrame()
+
+
+def validate_app_corpus_input(df: pd.DataFrame) -> None:
+    """앱 업로드에서 메타데이터만 있는 파일의 임의 결합을 막습니다."""
+    text_fields = [
+        '학과개요', '흥미와적성', '학과특성', '관련고교교과', '진로탐색활동',
+        '관련직업', '관련자격', '졸업후진출분야', '대학주요교과목',
+        '말뭉치_통합', '말뭉치',
+    ]
+    present = [column for column in text_fields if column in df.columns]
+    missing = [column for column in text_fields if column not in df.columns]
+    if not present:
+        raise ValueError(
+            '사용 가능한 학과 텍스트 필드가 없습니다. '
+            f'사용 필드: 없음 / 누락 필드: {", ".join(missing)}'
+        )
 
 
 def read_corpus(uploaded):
@@ -1366,15 +1440,20 @@ def read_corpus(uploaded):
         result = pd.read_excel(uploaded, dtype=str, engine='openpyxl').fillna('')
     else:
         result = pd.read_csv(uploaded, dtype=str).fillna('')
+    validate_app_corpus_input(result)
     return enrich_existing_corpus(result)
 
 
 def corpus_texts(df, channel: str = '통합'):
     channel_column = f'말뭉치_{channel}'
-    if channel_column in df.columns: return df[channel_column].astype(str).tolist()
-    if '말뭉치' in df.columns: return df['말뭉치'].astype(str).tolist()
-    cols=[c for c in df.columns if c not in {'majorSeq','계열','학과명','학과'}]
-    return df[cols].astype(str).agg(' '.join, axis=1).tolist()
+    if channel_column in df.columns:
+        return df[channel_column].fillna('').astype(str).tolist()
+    if channel == '통합' and '말뭉치' in df.columns:
+        return df['말뭉치'].fillna('').astype(str).tolist()
+    raise ValueError(
+        f'학과 말뭉치에 필요한 열이 없습니다: {channel_column}'
+        + (' 또는 말뭉치' if channel == '통합' else '')
+    )
 
 
 def _major_index(major_df, channel, stop, syn, min_len, use_kiwi):
@@ -1518,6 +1597,35 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b''):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _json_hash(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
+def analysis_dictionary_metadata(
+    stop: set[str], syn: dict[str, str], min_len: int, analyzer: Any
+) -> dict[str, Any]:
+    """캐시에 실제 적용한 전처리 사전과 재현용 해시를 기록합니다."""
+    sorted_stop = sorted(str(value) for value in stop)
+    sorted_synonyms = sorted(
+        [[str(source), str(target)] for source, target in syn.items()],
+        key=lambda item: (item[0].casefold(), item[1]),
+    )
+    return {
+        '불용어목록JSON': json.dumps(sorted_stop, ensure_ascii=False, separators=(',', ':')),
+        '실효불용어SHA256': _json_hash(sorted_stop),
+        '표현통일규칙JSON': json.dumps(sorted_synonyms, ensure_ascii=False, separators=(',', ':')),
+        '실효표현통일규칙SHA256': _json_hash(sorted_synonyms),
+        '최소단어길이': int(min_len),
+        '형태소분석기': analyzer_name(analyzer),
+        '형태소분석기버전': (
+            installed_package_version('kiwipiepy')
+            if analyzer_name(analyzer) == 'Kiwi'
+            else ('내장' if analyzer_name(analyzer) == '간이 토큰화' else installed_package_version('mecab'))
+        ),
+    }
 
 
 def installed_package_version(package: str) -> str:
@@ -1807,9 +1915,7 @@ def build_student_cache(
         '분석범위': scope,
         '학생수': len(records),
         '생성시각': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
-        '최소단어길이': min_len,
-        '형태소분석기': analyzer_name(use_kiwi),
-        '형태소분석기버전': installed_package_version('kiwipiepy') if analyzer_name(use_kiwi) == 'Kiwi' else '미확인',
+        **analysis_dictionary_metadata(stop, syn, min_len, use_kiwi),
         'Python버전': platform.python_version(),
         'scikit-learn버전': sklearn.__version__,
         'pandas버전': pd.__version__,
@@ -1881,10 +1987,11 @@ def cache_to_db(cache: Dict[str, pd.DataFrame]) -> bytes:
     tmp = DATA_DIR / '_student_cache_download.db'
     DATA_DIR.mkdir(exist_ok=True)
     with DOWNLOAD_FILE_LOCK:
-        with sqlite3.connect(tmp) as conn:
+        with closing(sqlite3.connect(tmp)) as conn:
             for key, df in cache.items():
                 if isinstance(df, pd.DataFrame):
                     df.fillna('').to_sql(key, conn, if_exists='replace', index=False)
+            conn.commit()
         return tmp.read_bytes()
 
 
@@ -1931,7 +2038,7 @@ def load_student_cache(uploaded) -> Optional[Dict[str, pd.DataFrame]]:
             DATA_DIR.mkdir(exist_ok=True)
             tmp.write_bytes(uploaded.getvalue())
             result = {}
-            with sqlite3.connect(tmp) as conn:
+            with closing(sqlite3.connect(tmp)) as conn:
                 for key in CACHE_TABLE_KEYS:
                     try:
                         result[key] = pd.read_sql(f'select * from {key}', conn).fillna('')
@@ -1948,18 +2055,19 @@ def save_student_cache_db(cache: Dict[str, pd.DataFrame], path: Path = STUDENT_C
     if not isinstance(cache, dict):
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         for key in CACHE_TABLE_KEYS:
             df = cache.get(key)
             if isinstance(df, pd.DataFrame):
                 df.fillna('').to_sql(key, conn, if_exists='replace', index=False)
+        conn.commit()
 
 
 def load_student_cache_db(path: Path = STUDENT_CACHE_PATH) -> Optional[Dict[str, pd.DataFrame]]:
     if not path.exists():
         return None
     result: Dict[str, pd.DataFrame] = {}
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn:
         for key in CACHE_TABLE_KEYS:
             try:
                 result[key] = pd.read_sql(f'select * from {key}', conn).fillna('')
@@ -1968,7 +2076,13 @@ def load_student_cache_db(path: Path = STUDENT_CACHE_PATH) -> Optional[Dict[str,
     return normalize_student_cache_identity(result) if result else None
 
 
-def student_cache_compatibility(cache: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+def student_cache_compatibility(
+    cache: Dict[str, pd.DataFrame],
+    stop: Optional[set[str]] = None,
+    syn: Optional[dict[str, str]] = None,
+    min_len: Optional[int] = None,
+    analyzer: Any = None,
+) -> Dict[str, Any]:
     tfidf = cache.get('tfidf', pd.DataFrame()) if isinstance(cache, dict) else pd.DataFrame()
     meta = cache.get('meta', pd.DataFrame()) if isinstance(cache, dict) else pd.DataFrame()
     schema_version = 0
@@ -2016,12 +2130,33 @@ def student_cache_compatibility(cache: Dict[str, pd.DataFrame]) -> Dict[str, Any
             '기존 특징어와 근거 원문은 사용할 수 있으나, 확장된 TF-IDF 워드클라우드와 '
             '전체 벡터 기반 연구지표를 사용하려면 원본 학생부를 다시 전처리해야 합니다.'
         )
+    dictionary_mismatch = False
+    if all(value is not None for value in [stop, syn, min_len, analyzer]):
+        expected = analysis_dictionary_metadata(stop or set(), syn or {}, int(min_len), analyzer)
+        if isinstance(meta, pd.DataFrame) and not meta.empty:
+            stored = meta.iloc[0]
+            comparable = [
+                '실효불용어SHA256', '실효표현통일규칙SHA256', '최소단어길이',
+                '형태소분석기',
+            ]
+            dictionary_mismatch = any(
+                str(stored.get(column, '')).strip() != str(expected[column]).strip()
+                for column in comparable
+                if column in stored.index
+            )
+            if dictionary_mismatch:
+                warning += (
+                    (' ' if warning else '')
+                    + '현재 분석 사전 또는 전처리 설정이 캐시 생성 당시와 다릅니다. '
+                    '원본 학생부를 현재 설정으로 다시 전처리해 주세요.'
+                )
     return {
         'status': status,
         'schema_version': schema_version,
         'stored_tfidf_limit': effective_limit,
         'has_full_tfidf_metrics': has_full_metrics,
         'has_student_metrics': has_student_metrics,
+        'dictionary_mismatch': dictionary_mismatch,
         'warning': warning,
     }
 
@@ -2251,7 +2386,10 @@ def main():
 
     st.sidebar.header('2. 분석 설정')
     scope = st.sidebar.radio('분석 범위', ['통합', '창체', '교과세특', '행발'])
-    min_len = st.sidebar.slider('최소 단어 길이', 1, 4, 2)
+    min_len = st.sidebar.slider(
+        '최소 단어 길이', 1, 4, 2,
+        help='기본값은 2이며, 선택한 길이보다 짧은 단어는 분석에서 제외됩니다.',
+    )
     top_n = st.sidebar.slider(
         'TF-IDF 상세표 표시 수',
         10,
@@ -2287,6 +2425,14 @@ def main():
                 st.warning(compatibility['warning'])
             cached_analyzer = student_cache_analyzer(cache)
             effective_analyzer = cached_analyzer or requested_analyzer
+            dictionary_compatibility = student_cache_compatibility(
+                cache, stop=stop, syn=syn, min_len=min_len, analyzer=effective_analyzer
+            )
+            if dictionary_compatibility['dictionary_mismatch']:
+                st.warning(
+                    '현재 분석 사전 또는 전처리 설정이 캐시 생성 당시와 다릅니다. '
+                    '원본 학생부를 다시 전처리해야 현재 설정과 일치하는 결과를 얻을 수 있습니다.'
+                )
             if cached_analyzer is not None and cached_analyzer != analyzer_name(requested_analyzer):
                 st.info(
                     f'불러온 학생부 캐시는 **{cached_analyzer}** 방식으로 전처리되었습니다. '

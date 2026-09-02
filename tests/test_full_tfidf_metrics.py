@@ -213,11 +213,31 @@ class StudentMetricAndCacheTests(unittest.TestCase):
         self.assertEqual(status['status'], '정상 최신 캐시')
         self.assertEqual(status['schema_version'], app.STUDENT_CACHE_SCHEMA_VERSION)
 
+    def test_cache_meta_contains_full_dictionary_configuration(self):
+        cache = self.build_cache(major=sample_major())
+        meta = cache['meta'].iloc[0]
+        for column in [
+            '불용어목록JSON', '실효불용어SHA256', '표현통일규칙JSON',
+            '실효표현통일규칙SHA256', '최소단어길이',
+            '형태소분석기', '형태소분석기버전',
+        ]:
+            self.assertIn(column, meta.index)
+        self.assertEqual(meta['형태소분석기버전'], '내장')
+
+    def test_cache_dictionary_mismatch_is_reported_when_settings_are_supplied(self):
+        cache = self.build_cache(major=sample_major())
+        status = app.student_cache_compatibility(
+            cache, stop={'다른불용어'}, syn={}, min_len=2, analyzer=False
+        )
+        self.assertTrue(status['dictionary_mismatch'])
+        self.assertIn('다시 전처리', status['warning'])
+
     def test_private_research_outputs_are_git_ignored(self):
         ignore_text = Path('.gitignore').read_text(encoding='utf-8')
         self.assertIn('/local_outputs/', ignore_text)
         self.assertIn('*_PRIVATE.*', ignore_text)
         self.assertIn('*.npz', ignore_text)
+        self.assertIn('/major_corpus_2026-09-01.db', ignore_text)
 
 
 class WordcloudSettingTests(unittest.TestCase):

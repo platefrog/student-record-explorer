@@ -8,4 +8,5 @@ scipy
 kiwipiepy
 kiwipiepy-model
 requests
+truststore
 pyinstaller

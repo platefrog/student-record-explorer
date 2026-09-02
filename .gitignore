@@ -9,6 +9,7 @@ dist/
 release/
 
 # Local runtime files
+/major_corpus_2026-09-01.db
 .streamlit-*.log
 run_dev.stdout.log
 run_dev.stderr.log

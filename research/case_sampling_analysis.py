@@ -8,6 +8,7 @@ import math
 import re
 import sqlite3
 import sys
+from contextlib import closing
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -29,7 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import app
-from careernet_corpus import enrich_existing_corpus
+from careernet_corpus import enrich_existing_corpus, validate_corpus_schema
 
 
 ID_COLUMNS = ['학년', '반', '번호', '성명']
@@ -103,7 +104,7 @@ def load_cache(path: Path) -> dict[str, pd.DataFrame]:
     if not path.is_file():
         raise FileNotFoundError(f'학생 캐시 DB를 찾을 수 없습니다: {path}')
     result: dict[str, pd.DataFrame] = {}
-    with sqlite3.connect(sqlite_uri(path), uri=True) as connection:
+    with closing(sqlite3.connect(sqlite_uri(path), uri=True)) as connection:
         available = {
             row[0]
             for row in connection.execute(
@@ -135,7 +136,7 @@ def load_cache(path: Path) -> dict[str, pd.DataFrame]:
 def load_major_corpus(path: Path) -> pd.DataFrame:
     if not path.is_file():
         raise FileNotFoundError(f'학과 말뭉치 DB를 찾을 수 없습니다: {path}')
-    with sqlite3.connect(sqlite_uri(path), uri=True) as connection:
+    with closing(sqlite3.connect(sqlite_uri(path), uri=True)) as connection:
         tables = {
             row[0]
             for row in connection.execute(
@@ -145,11 +146,7 @@ def load_major_corpus(path: Path) -> pd.DataFrame:
         if 'majors' not in tables:
             raise ValueError('학과 말뭉치 DB에 majors 테이블이 없습니다.')
         majors = pd.read_sql_query('SELECT * FROM majors', connection).fillna('')
-    majors = enrich_existing_corpus(majors)
-    required = ['majorSeq', '계열', '학과명', '말뭉치_통합']
-    missing = [column for column in required if column not in majors.columns]
-    if missing:
-        raise ValueError(f'학과 말뭉치에 필요한 열이 없습니다: {", ".join(missing)}')
+    validate_corpus_schema(majors, require_integrated=True, require_raw=True)
     return majors
 
 
@@ -255,6 +252,16 @@ def read_analysis_settings(cache: dict[str, pd.DataFrame]) -> dict[str, Any]:
     if not app.analyzer_available(analyzer):
         reason = app.analyzer_unavailable_reason(analyzer)
         raise RuntimeError(f'{analyzer} 형태소 분석기를 사용할 수 없습니다: {reason}')
+    dictionary_status = '미확인'
+    expected_dictionary = app.analysis_dictionary_metadata(stopwords, synonyms, min_len, analyzer)
+    dictionary_keys = ['실효불용어SHA256', '실효표현통일규칙SHA256', '최소단어길이']
+    if all(key in meta for key in dictionary_keys):
+        dictionary_status = '일치' if all(
+            str(meta.get(key, '')).strip() == str(expected_dictionary[key]).strip()
+            for key in dictionary_keys
+        ) else '불일치'
+        if dictionary_status == '불일치':
+            print('[warning] 현재 분석 사전과 학생 캐시 생성 당시 설정이 다릅니다. 재전처리를 권장합니다.', flush=True)
     return {
         'scope': str(meta.get('분석범위', '통합') or '통합'),
         'analyzer': analyzer,
@@ -262,6 +269,7 @@ def read_analysis_settings(cache: dict[str, pd.DataFrame]) -> dict[str, Any]:
         'stopwords': stopwords,
         'synonyms': synonyms,
         'cache_created_at': str(meta.get('생성시각', '')),
+        'dictionary_status': dictionary_status,
     }
 
 

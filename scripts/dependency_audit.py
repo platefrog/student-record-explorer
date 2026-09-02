@@ -19,6 +19,7 @@ CRITICAL_IMPORTS = (
     'kiwipiepy',
     'kiwipiepy_model',
     'requests',
+    'truststore',
     'openpyxl',
 )
 REQUIRED_SPEC_PACKAGES = (
@@ -30,6 +31,7 @@ REQUIRED_SPEC_PACKAGES = (
     'kiwipiepy',
     'kiwipiepy_model',
     'requests',
+    'truststore',
     'openpyxl',
 )
 REQUIRED_REQUIREMENTS = (
@@ -41,6 +43,7 @@ REQUIRED_REQUIREMENTS = (
     'kiwipiepy',
     'kiwipiepy-model',
     'requests',
+    'truststore',
     'openpyxl',
     'pyinstaller',
 )
@@ -93,6 +96,7 @@ def check_build(version: str) -> list[str]:
         internal / 'VERSION',
         internal / 'data' / 'stopwords.txt',
         internal / 'data' / 'synonyms.txt',
+        internal / 'data' / 'major_corpus.db',
     )
     for path in expected_paths:
         if not path.exists():
@@ -107,6 +111,7 @@ def check_build(version: str) -> list[str]:
         'kiwipiepy': internal / 'kiwipiepy' / '__init__.py',
         'kiwipiepy_model': internal / 'kiwipiepy_model' / '__init__.py',
         'requests': internal / 'requests' / '__init__.py',
+        'truststore': internal / 'truststore' / '__init__.py',
         'openpyxl': internal / 'openpyxl' / '__init__.py',
     }
     for module, marker in expected_module_files.items():

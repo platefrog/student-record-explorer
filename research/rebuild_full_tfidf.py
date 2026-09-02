@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import tracemalloc
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -97,10 +98,11 @@ def load_and_merge_raw(files: dict[str, list[Path]]) -> tuple[pd.DataFrame, dict
 
 
 def save_cache_db(cache: dict[str, pd.DataFrame], path: Path) -> None:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         for key, frame in cache.items():
             if isinstance(frame, pd.DataFrame):
                 frame.fillna('').to_sql(key, connection, if_exists='replace', index=False)
+        connection.commit()
 
 
 def distribution_summary(metrics: pd.DataFrame) -> pd.DataFrame:

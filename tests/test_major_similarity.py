@@ -1,6 +1,9 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pandas as pd
+import app
 
 from app import (
     analyzer_name,
@@ -40,6 +43,16 @@ class MajorSimilarityTests(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertEqual(result.iloc[0]['학과명'], '컴퓨터공학과')
 
+    def test_similarity_uses_full_student_document_not_display_top_terms(self):
+        majors = enrich_existing_corpus(pd.DataFrame([
+            {'majorSeq': '1', '계열': '공학', '학과명': '희귀학과', '학과개요': '희귀어휘'},
+            {'majorSeq': '2', '계열': '공학', '학과명': '다른학과', '학과개요': '다른어휘'},
+        ]))
+        student_text = ('공통어휘 ' * 100) + '희귀어휘'
+        result = similarity(student_text, majors, set(), {}, 2, '간이 토큰화', 2, channel='통합')
+        self.assertEqual(result.iloc[0]['학과명'], '희귀학과')
+        self.assertGreater(result.iloc[0]['유사도'], 0)
+
     def test_gap_analysis_uses_selected_channel(self):
         gap, common, _, metrics = gap_analysis(
             '정보 수업에서 코딩 활동을 수행함',
@@ -55,6 +68,42 @@ class MajorSimilarityTests(unittest.TestCase):
         self.assertEqual(analyzer_name(False), '간이 토큰화')
         self.assertEqual(analyzer_name('MeCab'), 'MeCab')
         self.assertEqual(analyzer_name('간이토큰화'), '간이 토큰화')
+
+    def test_synonym_rules_produce_one_target_token(self):
+        synonyms = {
+            'S/W': '소프트웨어',
+            '머신러닝': '기계학습',
+            '딥러닝': '심층학습',
+            '아이오티': '사물인터넷',
+            '생기부': '학교생활기록부',
+        }
+        for source, target in synonyms.items():
+            tokens = app.tokenize(source, set(), synonyms, 2, '간이 토큰화')
+            self.assertEqual(tokens, [target], source)
+
+    def test_synonym_alias_does_not_match_inside_english_word(self):
+        tokens = app.tokenize('RAID와 AI를 사용함', set(), {'AI': '인공지능'}, 2, '간이 토큰화')
+        self.assertIn('RAID', tokens)
+        self.assertIn('인공지능', tokens)
+
+    def test_simple_tokenizer_applies_minimum_length_to_single_characters(self):
+        tokens = app.tokenize('꿈 삶 것', set(), {}, 2, '간이 토큰화')
+        self.assertEqual(tokens, [])
+
+    def test_kiwi_applies_minimum_length_to_single_character_nouns(self):
+        fake_kiwi = SimpleNamespace(tokenize=lambda _text: [
+            SimpleNamespace(form='꿈', tag='NNG'),
+            SimpleNamespace(form='것', tag='NNB'),
+        ])
+        with patch.object(app, 'get_kiwi', return_value=fake_kiwi):
+            self.assertEqual(app.tokenize('ignored', set(), {}, 2, 'Kiwi'), [])
+
+    def test_mecab_applies_minimum_length_to_single_character_nouns(self):
+        fake_mecab = SimpleNamespace(pos=lambda _text: [('꿈', 'NNG'), ('것', 'NNB')])
+        with patch.object(app, 'get_mecab', return_value=fake_mecab), patch.object(
+            app, 'MECAB_BACKEND', 'python_mecab_ko'
+        ):
+            self.assertEqual(app.tokenize('ignored', set(), {}, 2, 'MeCab'), [])
 
     def test_keyword_highlight_escapes_html_and_includes_synonym_surface(self):
         rendered = highlight_keyword_html('<script>AI 분석 활동</script>', '인공지능', {'AI': '인공지능'})

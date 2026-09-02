@@ -5,6 +5,7 @@ import re
 import time
 from datetime import datetime
 from typing import Any, Callable, Dict, Iterable, List, Optional
+from urllib.parse import quote, quote_plus
 
 import pandas as pd
 import requests
@@ -13,17 +14,37 @@ from urllib3.util.retry import Retry
 
 
 CAREERNET_API_URL = 'https://www.career.go.kr/cnet/openapi/getOpenApi'
-CORPUS_SCHEMA_VERSION = '2'
+CORPUS_SCHEMA_VERSION = '3'
 
 RAW_COLUMNS = [
     'majorSeq', '계열', '학과명', '세부학과명', '학과개요', '흥미와적성', '학과특성',
     '관련고교교과', '진로탐색활동', '관련직업', '관련자격', '졸업후진출분야',
     '대학주요교과목',
 ]
+CORPUS_TEXT_COLUMNS = RAW_COLUMNS[4:]
 CHANNEL_COLUMNS = [
     '말뭉치_학업', '말뭉치_교과', '말뭉치_활동', '말뭉치_적성', '말뭉치_진로',
     '말뭉치_통합',
 ]
+
+
+def validate_corpus_schema(
+    df: pd.DataFrame,
+    *,
+    require_integrated: bool = True,
+    require_raw: bool = True,
+) -> None:
+    """연구용 입력 DB가 말뭉치 원자료와 채널을 명시적으로 갖췄는지 확인합니다."""
+    if not isinstance(df, pd.DataFrame):
+        raise ValueError('학과 말뭉치가 표 형식이 아닙니다.')
+    required = ['majorSeq', '계열', '학과명']
+    if require_raw:
+        required.extend(column for column in RAW_COLUMNS if column not in required)
+    if require_integrated:
+        required.append('말뭉치_통합')
+    missing = [column for column in dict.fromkeys(required) if column not in df.columns]
+    if missing:
+        raise ValueError(f'학과 말뭉치에 필요한 열이 없습니다: {", ".join(missing)}')
 
 
 def clean_api_text(value: Any) -> str:
@@ -98,9 +119,13 @@ def build_corpus_channels(row: Dict[str, Any]) -> Dict[str, str]:
     activities = _join_unique(row.get('진로탐색활동'))
     aptitude = _join_unique(row.get('흥미와적성'))
     career = _join_unique(row.get('졸업후진출분야'), row.get('관련직업'), row.get('관련자격'))
-    combined = _join_unique(
-        row.get('학과명'), row.get('세부학과명'), academic, subjects, activities, aptitude, career
-    )
+    # 통합 문서는 채널을 재결합하지 않고 원자료 필드를 한 번씩 읽습니다.
+    # 따라서 대학주요교과목이 학업·교과 채널에 포함되더라도 통합에서는 한 번만 남습니다.
+    combined = _join_unique(*(row.get(column) for column in ['학과명', '세부학과명', *CORPUS_TEXT_COLUMNS]))
+    # ``말뭉치``만 있던 구버전 파일은 앱에서 계속 읽을 수 있게 보존합니다.
+    # 원자료 값이 하나라도 있으면 임의의 레거시 텍스트를 섞지 않습니다.
+    if not any(clean_api_text(row.get(column)) for column in CORPUS_TEXT_COLUMNS):
+        combined = _join_unique(row.get('말뭉치'), row.get('학과명'), row.get('세부학과명'))
     return {
         '말뭉치_학업': academic,
         '말뭉치_교과': subjects,
@@ -111,6 +136,52 @@ def build_corpus_channels(row: Dict[str, Any]) -> Dict[str, str]:
         # 기존 파일과 분석 코드의 하위 호환을 위해 유지합니다.
         '말뭉치': combined,
     }
+
+
+def redact_api_key(message: Any, api_key: str = '') -> str:
+    """예외·로그에 남는 커리어넷 URL의 apiKey 값을 제거합니다."""
+    text = clean_api_text(message)
+    text = re.sub(
+        r'([?&](?:apiKey|api_key)=)[^&#\s]*',
+        r'\1[REDACTED]',
+        text,
+        flags=re.IGNORECASE,
+    )
+    secret = str(api_key or '').strip()
+    if secret:
+        candidates = {secret, quote(secret, safe=''), quote_plus(secret)}
+        for value in sorted(candidates, key=len, reverse=True):
+            if value:
+                text = text.replace(value, '[REDACTED]')
+    return text
+
+
+def format_careernet_error(exc: BaseException, api_key: str = '') -> str:
+    """사용자에게 보여 줄 수 있는 안전한 커리어넷 요청 오류를 만듭니다."""
+    if isinstance(exc, requests.exceptions.SSLError):
+        return (
+            '커리어넷 HTTPS 인증서 검증에 실패했습니다. API 키 오류가 아니라 '
+            'Windows 시스템 인증서 저장소 또는 학교 네트워크 인증서를 확인해 주세요.'
+        )
+    return redact_api_key(f'{type(exc).__name__}: {exc}', api_key)
+
+
+_TRUSTSTORE_CONFIGURED = False
+
+
+def configure_system_certificate_store() -> str:
+    """가능한 환경에서 OS 인증서 저장소를 requests의 SSL에 연결합니다."""
+    global _TRUSTSTORE_CONFIGURED
+    if _TRUSTSTORE_CONFIGURED:
+        return 'truststore'
+    try:
+        import truststore
+    except ImportError:
+        # 일반 환경에서는 requests의 기본 CA 검증을 그대로 사용합니다.
+        return 'requests-default'
+    truststore.inject_into_ssl()
+    _TRUSTSTORE_CONFIGURED = True
+    return 'truststore'
 
 
 def enrich_existing_corpus(df: pd.DataFrame) -> pd.DataFrame:
@@ -133,6 +204,7 @@ def enrich_existing_corpus(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _make_session() -> requests.Session:
+    configure_system_certificate_store()
     session = requests.Session()
     retry = Retry(
         total=3,
@@ -153,13 +225,18 @@ def _request_json(session: requests.Session, api_key: str, **params: Any) -> Dic
         'gubun': 'univ_list',
         **params,
     }
-    response = session.get(CAREERNET_API_URL, params=query, timeout=(5, 25))
-    response.raise_for_status()
-    payload = response.json()
-    result = payload.get('result') if isinstance(payload, dict) else None
-    if isinstance(result, dict) and str(result.get('code', '0')) not in {'0', ''}:
-        raise RuntimeError(clean_api_text(result.get('message')) or '커리어넷 API 오류')
-    return payload
+    try:
+        response = session.get(CAREERNET_API_URL, params=query, timeout=(5, 25))
+        response.raise_for_status()
+        payload = response.json()
+        result = payload.get('result') if isinstance(payload, dict) else None
+        if isinstance(result, dict) and str(result.get('code', '0')) not in {'0', ''}:
+            raise RuntimeError(clean_api_text(result.get('message')) or '커리어넷 API 오류')
+        return payload
+    except requests.exceptions.SSLError as exc:
+        raise RuntimeError(format_careernet_error(exc, api_key)) from exc
+    except Exception as exc:
+        raise RuntimeError(format_careernet_error(exc, api_key)) from exc
 
 
 def fetch_major_list(
@@ -280,9 +357,9 @@ def collect_careernet_corpus(
                 row = parse_major_detail(base, payload)
             except Exception as exc:
                 if old:
-                    row = {**old, '수집오류': clean_api_text(exc)}
+                    row = {**old, '수집오류': format_careernet_error(exc, api_key)}
                 else:
-                    row = {**base, '수집오류': clean_api_text(exc)}
+                    row = {**base, '수집오류': format_careernet_error(exc, api_key)}
                     row.update(build_corpus_channels(row))
                     row['수집시각'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     row['스키마버전'] = CORPUS_SCHEMA_VERSION

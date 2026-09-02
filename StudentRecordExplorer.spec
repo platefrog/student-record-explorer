@@ -11,6 +11,7 @@ datas = [
     ('VERSION', '.'),
     ('data/stopwords.txt', 'data'),
     ('data/synonyms.txt', 'data'),
+    ('data/major_corpus.db', 'data'),
 ]
 hiddenimports = []
 binaries = []
@@ -22,7 +23,7 @@ def runtime_submodule(name):
     return not parts.intersection({'test', 'tests', 'testing', 'conftest'})
 
 
-for pkg in ['streamlit', 'pandas', 'sklearn', 'wordcloud', 'matplotlib', 'kiwipiepy', 'kiwipiepy_model', 'requests', 'openpyxl']:
+for pkg in ['streamlit', 'pandas', 'sklearn', 'wordcloud', 'matplotlib', 'kiwipiepy', 'kiwipiepy_model', 'requests', 'truststore', 'openpyxl']:
     try:
         d, b, h = collect_all(
             pkg,
