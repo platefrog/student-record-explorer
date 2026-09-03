@@ -18,11 +18,11 @@ Windows에서 `build_exe.bat`을 실행합니다. Python 가상환경과 패키�
 
 생성 결과:
 
-- `dist\StudentRecordExplorer-1.1.1\StudentRecordExplorer.exe`: 빌드 확인용 실행 파일
-- `release\StudentRecordExplorer-Portable-1.1.1.zip`: 무설치 압축본
-- `release\StudentRecordExplorer-Setup-1.1.1.exe`: Inno Setup이 설치된 경우 생성되는 설치본
+- `dist\StudentRecordExplorer-1.1.2\StudentRecordExplorer.exe`: 빌드 확인용 실행 파일
+- `release\StudentRecordExplorer-Portable-1.1.2.zip`: 무설치 압축본
+- `release\StudentRecordExplorer-Setup-1.1.2.exe`: Inno Setup이 설치된 경우 생성되는 설치본
 
-제품 버전은 저장소 루트의 `VERSION` 파일을 단일 기준으로 사용합니다. Windows 실행 파일 정보, 설치 프로그램과 배포 파일명은 빌드 검증 단계에서 `1.1.1`과 일치하는지 확인합니다.
+제품 버전은 저장소 루트의 `VERSION` 파일을 단일 기준으로 사용합니다. Windows 실행 파일 정보, 설치 프로그램과 배포 파일명은 빌드 검증 단계에서 `1.1.2`와 일치하는지 확인합니다.
 
 정식 배포 전에는 Python이 없는 별도 Windows PC, 관리자 권한이 없는 계정, Windows Defender가 활성화된 환경에서 확인합니다.
 

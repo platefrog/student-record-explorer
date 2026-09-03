@@ -1112,6 +1112,16 @@ def parse_excel(file, source):
     return df, f'{source}: {group_label}, {len(df)}명, 조각 {pieces}개'
 
 
+def validate_neis_student_export(file) -> None:
+    """나이스 항목별 조회 원본의 파일명 형식을 확인합니다."""
+    name = str(getattr(file, 'name', '') or '')
+    if not name.lower().endswith('.xlsx.data'):
+        raise ValueError(
+            f'나이스 원본 파일만 사용할 수 있습니다: {name or "파일명 없음"}. '
+            '파일명이 .xlsx.data로 끝나는 항목별 조회 파일을 업로드하세요.'
+        )
+
+
 def parse_excel_files(
     files,
     source,
@@ -1119,7 +1129,7 @@ def parse_excel_files(
 ):
     """같은 항목의 엑셀 파일을 여러 개 받아 하나로 합칩니다.
 
-    예: 3-1반 창체.xlsx, 3-2반 창체.xlsx를 함께 넣으면
+    예: 3-1반 창체.xlsx.data, 3-2반 창체.xlsx.data를 함께 넣으면
     두 파일의 학생 기록을 하나의 창체 자료로 통합합니다.
     """
     if not files:
@@ -1128,6 +1138,7 @@ def parse_excel_files(
     total_pieces=0
     file_count = len(files)
     for file_index, f in enumerate(files, start=1):
+        validate_neis_student_export(f)
         if progress_callback:
             progress_callback(
                 (file_index - 1) / file_count,
@@ -2910,9 +2921,10 @@ def main():
         with up_col:
             st.markdown('#### 원본 학생부 파일 업로드')
             render_student_file_help()
-            f_ch = st.file_uploader('창체 파일(.xlsx.data, 복수 선택 가능)', type='data', accept_multiple_files=True, key='pre_changche')
-            f_se = st.file_uploader('교과세특 파일(.xlsx.data, 복수 선택 가능)', type='data', accept_multiple_files=True, key='pre_setuk')
-            f_ha = st.file_uploader('행발 파일(.xlsx.data, 복수 선택 가능)', type='data', accept_multiple_files=True, key='pre_haengbal')
+            student_file_types = ['data', 'xlsx']
+            f_ch = st.file_uploader('창체 파일(.xlsx.data, 복수 선택 가능)', type=student_file_types, accept_multiple_files=True, key='pre_changche')
+            f_se = st.file_uploader('교과세특 파일(.xlsx.data, 복수 선택 가능)', type=student_file_types, accept_multiple_files=True, key='pre_setuk')
+            f_ha = st.file_uploader('행발 파일(.xlsx.data, 복수 선택 가능)', type=student_file_types, accept_multiple_files=True, key='pre_haengbal')
             st.caption('학년·반은 엑셀 상단 또는 파일명에서 자동 인식합니다. 파일명 예: `3학년 1반 창체.xlsx.data` 또는 `3-1반 창체.xlsx.data`')
             merged = pd.DataFrame()
             msgs = []

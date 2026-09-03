@@ -11,6 +11,7 @@ from app import (
     student_identity,
     student_mask,
     tfidf_table,
+    validate_neis_student_export,
 )
 
 
@@ -55,8 +56,8 @@ class StudentIdentityTests(unittest.TestCase):
 
     def test_same_name_and_number_in_different_classes_stay_separate(self):
         files = [
-            student_file('3-1반 창체.xlsx', '과학 탐구 활동에 성실하게 참여함'),
-            student_file('3-2반 창체.xlsx', '독서 토론 활동에 주도적으로 참여함'),
+            student_file('3-1반 창체.xlsx.data', '과학 탐구 활동에 성실하게 참여함'),
+            student_file('3-2반 창체.xlsx.data', '독서 토론 활동에 주도적으로 참여함'),
         ]
 
         parsed, _ = parse_excel_files(files, '창체')
@@ -68,8 +69,8 @@ class StudentIdentityTests(unittest.TestCase):
         source_frames = []
         for source in ['창체', '교과세특', '행발']:
             files = [
-                student_file(f'3학년 1반 {source}.xlsx', f'{source} 첫 번째 반 학생 기록 내용입니다'),
-                student_file(f'3학년 2반 {source}.xlsx', f'{source} 두 번째 반 학생 기록 내용입니다'),
+                student_file(f'3학년 1반 {source}.xlsx.data', f'{source} 첫 번째 반 학생 기록 내용입니다'),
+                student_file(f'3학년 2반 {source}.xlsx.data', f'{source} 두 번째 반 학생 기록 내용입니다'),
             ]
             parsed, _ = parse_excel_files(files, source)
             source_frames.append(parsed)
@@ -90,6 +91,14 @@ class StudentIdentityTests(unittest.TestCase):
         first_student = cache['records'].iloc[0]
         self.assertEqual(student_mask(cache['freq'], first_student).sum() > 0, True)
         self.assertTrue((cache['freq'].loc[student_mask(cache['freq'], first_student), '반'] == '1').all())
+
+    def test_student_export_requires_xlsx_data_filename(self):
+        valid = student_file('3학년 1반 창체.xlsx.data', '기록')
+        invalid = student_file('3학년 1반 창체.xlsx', '기록')
+
+        validate_neis_student_export(valid)
+        with self.assertRaisesRegex(ValueError, r'\.xlsx\.data'):
+            validate_neis_student_export(invalid)
 
 
 if __name__ == '__main__':
