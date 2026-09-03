@@ -911,9 +911,9 @@ def render_sidebar_privacy_notice():
 def render_student_file_help():
     with st.expander('📁 나이스 학생부 파일 준비 방법', expanded=False):
         st.markdown("""
-이 앱은 **나이스(NEIS)에서 내려받은 `.xlsx.data` 형식의 학생부 항목별 조회 파일**을 기준으로 작동합니다.
+이 앱은 **나이스(NEIS)에서 내려받은 `.xlsx` 또는 `.xlsx.data` 형식의 학생부 항목별 조회 파일**을 기준으로 작동합니다.
 
-⚠️ **반드시 파일명이 `.xlsx.data`로 끝나는 파일을 사용하세요. 일반 `.xlsx` 엑셀 파일은 전처리 과정에서 오류가 발생합니다.**
+⚠️ **나이스 항목별 조회에서 내려받은 원본 `.xlsx` 또는 `.xlsx.data` 파일을 사용하세요.**
 아래 경로에서 각각의 파일을 내려받아 업로드해 주세요.
 
 **1. 창체 파일(.xlsx.data)**
@@ -925,7 +925,7 @@ def render_student_file_help():
 **3. 행발 파일(.xlsx.data)**
 `나이스 > 학급담임 > 학교생활기록부 > 학생부 항목별 조회 > 행동특성및종합의견 > 행동특성및종합의견`
 
-각 항목에서 조회한 뒤 **엑셀 저장/다운로드**로 받은 원본 `.xlsx.data` 파일을 **파일명과 확장자를 바꾸지 말고** 업로드하세요.
+각 항목에서 조회한 뒤 **엑셀 저장/다운로드**로 받은 원본 `.xlsx` 또는 `.xlsx.data` 파일을 **파일명과 확장자를 바꾸지 말고** 업로드하세요.
 
 학생 자료를 다룰 때에는 반드시 학교 내부 지침에 따라 접근 권한, 개인정보 보호, 비식별화 절차를 확인해 주세요.
 """)
@@ -1115,10 +1115,10 @@ def parse_excel(file, source):
 def validate_neis_student_export(file) -> None:
     """나이스 항목별 조회 원본의 파일명 형식을 확인합니다."""
     name = str(getattr(file, 'name', '') or '')
-    if not name.lower().endswith('.xlsx.data'):
+    if not name.lower().endswith(('.xlsx', '.xlsx.data')):
         raise ValueError(
             f'나이스 원본 파일만 사용할 수 있습니다: {name or "파일명 없음"}. '
-            '파일명이 .xlsx.data로 끝나는 항목별 조회 파일을 업로드하세요.'
+            '나이스 항목별 조회에서 내려받은 .xlsx 또는 .xlsx.data 파일을 업로드하세요.'
         )
 
 
@@ -2922,9 +2922,9 @@ def main():
             st.markdown('#### 원본 학생부 파일 업로드')
             render_student_file_help()
             student_file_types = ['data', 'xlsx']
-            f_ch = st.file_uploader('창체 파일(.xlsx.data, 복수 선택 가능)', type=student_file_types, accept_multiple_files=True, key='pre_changche')
-            f_se = st.file_uploader('교과세특 파일(.xlsx.data, 복수 선택 가능)', type=student_file_types, accept_multiple_files=True, key='pre_setuk')
-            f_ha = st.file_uploader('행발 파일(.xlsx.data, 복수 선택 가능)', type=student_file_types, accept_multiple_files=True, key='pre_haengbal')
+            f_ch = st.file_uploader('창체 파일(.xlsx 또는 .xlsx.data, 복수 선택 가능)', type=student_file_types, accept_multiple_files=True, key='pre_changche')
+            f_se = st.file_uploader('교과세특 파일(.xlsx 또는 .xlsx.data, 복수 선택 가능)', type=student_file_types, accept_multiple_files=True, key='pre_setuk')
+            f_ha = st.file_uploader('행발 파일(.xlsx 또는 .xlsx.data, 복수 선택 가능)', type=student_file_types, accept_multiple_files=True, key='pre_haengbal')
             st.caption('학년·반은 엑셀 상단 또는 파일명에서 자동 인식합니다. 파일명 예: `3학년 1반 창체.xlsx.data` 또는 `3-1반 창체.xlsx.data`')
             merged = pd.DataFrame()
             msgs = []

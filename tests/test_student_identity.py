@@ -92,12 +92,14 @@ class StudentIdentityTests(unittest.TestCase):
         self.assertEqual(student_mask(cache['freq'], first_student).sum() > 0, True)
         self.assertTrue((cache['freq'].loc[student_mask(cache['freq'], first_student), '반'] == '1').all())
 
-    def test_student_export_requires_xlsx_data_filename(self):
-        valid = student_file('3학년 1반 창체.xlsx.data', '기록')
-        invalid = student_file('3학년 1반 창체.xlsx', '기록')
+    def test_student_export_accepts_xlsx_and_xlsx_data_filenames(self):
+        xlsx_data = student_file('3학년 1반 창체.xlsx.data', '기록')
+        xlsx = student_file('교과세특 13반.xlsx', '기록')
+        invalid = student_file('3학년 1반 창체.csv', '기록')
 
-        validate_neis_student_export(valid)
-        with self.assertRaisesRegex(ValueError, r'\.xlsx\.data'):
+        validate_neis_student_export(xlsx_data)
+        validate_neis_student_export(xlsx)
+        with self.assertRaisesRegex(ValueError, r'\.xlsx'):
             validate_neis_student_export(invalid)
 
 
